@@ -13,7 +13,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PBI Cleaner")
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(1000, 500)
 
         self.pbip_path = None
 

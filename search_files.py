@@ -3,7 +3,8 @@ import sys
 import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
-    QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QProgressBar
+    QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QProgressBar,
+    QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -81,6 +82,8 @@ class FileSearchApp(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Force single-row selection only
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setWordWrap(False)
@@ -108,11 +111,23 @@ class FileSearchApp(QWidget):
         actions_layout.addStretch()
 
         self.status = QLabel("No results yet.")
+        # Ensure the footer/status area remains visible and not clipped
+        self.status.setMinimumHeight(24)
+        self.status.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         self.progress_bar.setMaximum(100)
+        self.progress_bar.setFixedHeight(16)
 
-        progress_layout = QHBoxLayout()
+        # Footer container to guarantee consistent height
+        footer_widget = QWidget()
+        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_widget.setMinimumHeight(36)
+
+        progress_layout = QHBoxLayout(footer_widget)
+        progress_layout.setContentsMargins(0, 4, 0, 4)
+        progress_layout.setSpacing(8)
         progress_layout.addWidget(self.status)
         progress_layout.addWidget(self.progress_bar)
 
@@ -121,8 +136,10 @@ class FileSearchApp(QWidget):
         main_layout.addLayout(context_layout)
         main_layout.addWidget(self.search_button)
         main_layout.addLayout(actions_layout)
-        main_layout.addWidget(self.table)
-        main_layout.addLayout(progress_layout)
+        # Give the table stretch so the footer keeps enough vertical space
+        main_layout.addWidget(self.table, 1)
+        # Add footer widget with fixed vertical space
+        main_layout.addWidget(footer_widget)
 
         self.setLayout(main_layout)
 
