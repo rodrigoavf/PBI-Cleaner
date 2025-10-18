@@ -1,0 +1,336 @@
+from PyQt6.QtCore import Qt, QEvent, QRegularExpression, QObject
+from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QTextCursor
+from PyQt6.QtWidgets import QCompleter
+
+
+# A list of common DAX keywords and functions for highlighting and completion
+DAX_KEYWORDS = [
+    # Structural / Query Keywords
+    'DEFINE', 'MEASURE', 'EVALUATE', 'VAR', 'RETURN', 'TABLE', 'COLUMN',
+    'ROW', 'SELECT', 'FROM', 'WHERE', 'ORDER BY', 'GROUP BY',
+    # Logical / Comparison / Operators (keywords that appear as terms)
+    'TRUE', 'FALSE', 'BLANK', 'AND', 'OR', 'NOT', 'IN',
+    # Conditional / branching
+    'IF', 'THEN', 'ELSE', 'SWITCH',
+    # Iteration / context
+    'FOR', 'TO', 'BY', 'AS',
+    # Modeling / Data construction
+    'DATATABLE', 'SUMMARIZECOLUMNS', 'GENERATE', 'GENERATEALL',
+    # Query-specific
+    'START AT', 'DEFINE', 'MEASURE', 'EVALUATE', 'ORDER BY',
+]
+
+DAX_FUNCTIONS = [
+    # Aggregation / Basic
+    'SUM', 'AVERAGE', 'AVERAGEX', 'COUNT', 'COUNTA', 'COUNTAX', 'COUNTROWS',
+    'MIN', 'MINA', 'MAX', 'MAXA', 'PRODUCT', 'PRODUCTX', 'MEDIANX',
+    'GEOMEANX', 'PERCENTILEX.EXC', 'PERCENTILEX.INC', 'CONCATENATEX',
+    'RANKX',
+
+    # Iterator functions (row by row)
+    'SUMX', 'AVERAGEX', 'COUNTX', 'MAXX', 'MINX', 'PRODUCTX',
+    'FILTERX', 'ADDCOLUMNS', 'SELECTCOLUMNS', 'GENERATE', 'GENERATEALL',
+    'CROSSJOIN', 'UNION', 'INTERSECT', 'EXCEPT',
+    'NATURALINNERJOIN', 'NATURALLEFTOUTERJOIN', 'GROUPBY', 'CURRENTGROUP',
+    'ROLLUP', 'ROLLUPADDISSUBTOTAL', 'ROLLUPGROUP', 'ROLLUPISSUBTOTAL',
+
+    # Filter / Context / Lookup
+    'CALCULATE', 'CALCULATETABLE', 'FILTER', 'ALL', 'ALLSELECTED',
+    'ALLEXCEPT', 'REMOVEFILTERS', 'KEEPFILTERS', 'VALUES', 'DISTINCT',
+    'CROSSFILTER', 'USERELATIONSHIP', 'RELATED', 'RELATEDTABLE',
+    'LOOKUPVALUE', 'EARLIER', 'EARLIEST', 'ISINSCOPE', 'HASONEFILTER',
+    'HASONEVALUE',
+
+    # Time Intelligence
+    'DATEADD', 'DATESINPERIOD', 'DATESBETWEEN', 'DATESYTD', 'DATESMTD',
+    'DATESQTD', 'TOTALYTD', 'TOTALMTD', 'TOTALQTD', 'SAMEPERIODLASTYEAR',
+    'PARALLELPERIOD', 'PREVIOUSYEAR', 'NEXTYEAR', 'PREVIOUSMONTH',
+    'NEXTMONTH', 'PREVIOUSDAY', 'NEXTDAY', 'STARTOFYEAR', 'ENDOFYEAR',
+    'STARTOFMONTH', 'ENDOFMONTH', 'STARTOFQUARTER', 'ENDOFQUARTER',
+    'CLOSINGBALANCEWEEK', 'CLOSINGBALANCEMONTH', 'CLOSINGBALANCEQUARTER',
+    'CLOSINGBALANCEYEAR', 'DATESWTD', 'DATESYTD', 'DATESQTD',
+
+    # Date & Time / Conversion
+    'DATE', 'DATEDIFF', 'DATEVALUE', 'DAY', 'EDATE', 'EOMONTH',
+    'HOUR', 'MINUTE', 'MONTH', 'NETWORKDAYS', 'NOW', 'QUARTER',
+    'SECOND', 'TIME', 'TIMEVALUE', 'TODAY', 'UTCNOW', 'UTCTODAY',
+    'WEEKDAY', 'WEEKNUM', 'YEAR', 'YEARFRAC',
+
+    # Text / String functions
+    'COMBINEVALUES', 'CONCATENATE', 'CONCATENATEX', 'EXACT', 'FIND',
+    'FIXED', 'FORMAT', 'LEFT', 'LEN', 'LOWER', 'MID', 'REPLACE', 'REPT',
+    'RIGHT', 'SEARCH', 'SUBSTITUTE', 'UPPER', 'UNICHAR', 'UNICODE',
+
+    # Mathematical & Trigonometric
+    'ABS', 'CEILING', 'FLOOR', 'EXP', 'LN', 'LOG', 'LOG10', 'MOD',
+    'POWER', 'QUOTIENT', 'ROUND', 'ROUNDDOWN', 'ROUNDUP', 'SIGN', 'SQRT',
+    'SQRTPI', 'DIVIDE',
+
+    # Logical / Information
+    'AND', 'OR', 'NOT', 'IF', 'IFERROR', 'COALESCE', 'ISBLANK', 'ISNUMBER',
+    'ISTEXT', 'ISEMPTY', 'ISNONTEXT', 'ERROR', 'SWITCH', 'SELECTEDVALUE',
+
+    # Parent / Child / Hierarchy
+    'PATH', 'PATHCONTAINS', 'PATHITEM', 'PATHITEMREVERSE', 'PATHLENGTH',
+
+    # Statistical / Distribution (less common)
+    'NORM.DIST', 'NORM.S.DIST', 'NORM.INV', 'NORM.S.INV', 'BETA.DIST', 'BETA.INV',
+    'BINOM.DIST', 'CHISQ.DIST', 'CHISQ.INV', 'CHISQ.TEST', 'CONFIDENCE.NORM',
+    'EXPON.DIST', 'F.DIST', 'F.INV', 'F.TEST', 'GAMMA', 'GAMMA.DIST', 'GAMMA.INV',
+    'LOGNORM.DIST', 'LOGNORM.INV', 'POISSON.DIST', 'T.DIST', 'T.INV', 'T.TEST',
+
+    # Utility / Conversion / Others
+    'BLANK', 'VALUE', 'INT', 'TRUNC', 'CURRENCY', 'EXACT', 'CONVERT',
+    'ISO.CEILING',
+
+    # Metadata / Info functions
+    'USERNAME', 'USERPRINCIPALNAME', 'CUSTOMDATA',
+    
+    # Query / Table output
+    'DATATABLE', 'SUMMARIZE', 'SUMMARIZECOLUMNS',
+    'TOPN', 'RANK', 'ROWNUMBER', 'MATCHBY', 'LOOKUPWITHTOTALS', 'FIRST', 'LAST', 'NEXT', 'PREVIOUS',
+]
+
+class DAXHighlighter(QSyntaxHighlighter):
+    """Simple DAX syntax highlighter for QTextDocument."""
+
+    def __init__(self, document):
+        super().__init__(document)
+
+        # Formats
+        self.f_keyword = QTextCharFormat()
+        self.f_keyword.setForeground(QColor('#C586C0'))  # purple-ish
+        self.f_keyword.setFontWeight(QFont.Weight.DemiBold)
+
+        self.f_function = QTextCharFormat()
+        self.f_function.setForeground(QColor('#4FC1FF'))  # blue
+
+        self.f_string = QTextCharFormat()
+        self.f_string.setForeground(QColor('#CE9178'))  # orange
+
+        self.f_number = QTextCharFormat()
+        self.f_number.setForeground(QColor('#B5CEA8'))  # green
+
+        self.f_comment = QTextCharFormat()
+        self.f_comment.setForeground(QColor('#6A9955'))  # comment green
+
+        # Build regex rules (use inline (?i) for case-insensitive)
+        # Keywords (word-boundary)
+        kw_pattern = r"(?i)\b(" + "|".join(DAX_KEYWORDS) + r")\b"
+        self.re_keyword = QRegularExpression(kw_pattern)
+
+        # Functions followed by optional whitespace and '(' (highlight the name)
+        fn_pattern = r"(?i)\b(" + "|".join(DAX_FUNCTIONS) + r")\b(?=\s*\()"
+        self.re_function = QRegularExpression(fn_pattern)
+
+        # Strings: double quotes
+        self.re_string = QRegularExpression(r'"[^"\\]*(?:\\.[^"\\]*)*"')
+
+        # Numbers (ints/floats)
+        self.re_number = QRegularExpression(r"\b[0-9]+(\.[0-9]+)?\b")
+
+        # Line comments //...
+        self.re_line_comment = QRegularExpression(r"//.*$")
+
+        # Block comments /* ... */ (multi-line handled in highlightBlock via setCurrentBlockState)
+        self.re_comment_start = QRegularExpression(r"/\*")
+        self.re_comment_end = QRegularExpression(r"\*/")
+
+    def highlightBlock(self, text: str) -> None:
+        # Block comment handling
+        self.setCurrentBlockState(0)
+
+        comment_spans: list[tuple[int, int]] = []
+
+        # Multi-line comments
+        if self.previousBlockState() != 1:
+            match = self.re_comment_start.match(text)
+            start_index = match.capturedStart() if match.hasMatch() else -1
+        else:
+            start_index = 0
+
+        while start_index >= 0:
+            end_match = self.re_comment_end.match(text, start_index)
+            end_index = end_match.capturedEnd() if end_match.hasMatch() else -1
+            if end_index == -1:
+                self.setCurrentBlockState(1)
+                length = len(text) - start_index
+                comment_spans.append((start_index, length))
+                break
+            else:
+                length = end_index - start_index
+                comment_spans.append((start_index, length))
+                next_match = self.re_comment_start.match(text, end_index)
+                start_index = next_match.capturedStart() if next_match.hasMatch() else -1
+
+        if self.previousBlockState() == 1 and self.currentBlockState() != 1:
+            # we exited a block comment
+            self.setCurrentBlockState(0)
+
+        # Single line comment
+        it = self.re_line_comment.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            comment_spans.append((m.capturedStart(), m.capturedLength()))
+
+        # Strings
+        it = self.re_string.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
+                self.setFormat(m.capturedStart(), m.capturedLength(), self.f_string)
+
+        # Numbers
+        it = self.re_number.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
+                self.setFormat(m.capturedStart(), m.capturedLength(), self.f_number)
+
+        # Functions
+        it = self.re_function.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            if not self._span_overlaps(comment_spans, m.capturedStart(1), m.capturedLength(1)):
+                self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_function)
+
+        # Keywords
+        it = self.re_keyword.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            if not self._span_overlaps(comment_spans, m.capturedStart(1), m.capturedLength(1)):
+                self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_keyword)
+
+        # Apply comment formatting last so it overrides other spans
+        for start, length in comment_spans:
+            if length > 0:
+                self.setFormat(start, length, self.f_comment)
+
+    @staticmethod
+    def _span_overlaps(spans: list[tuple[int, int]], start: int, length: int) -> bool:
+        end = start + length
+        for span_start, span_length in spans:
+            span_end = span_start + span_length
+            if start < span_end and end > span_start:
+                return True
+        return False
+
+
+class DAXAutoCompleter(QObject):
+    """Attach a QCompleter to a QTextEdit for DAX suggestions."""
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+        self.completer = QCompleter(sorted(set(DAX_KEYWORDS + DAX_FUNCTIONS)))
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        try:
+            # Improves sorting with case-insensitive models
+            self.completer.setModelSorting(QCompleter.ModelSorting.CaseInsensitivelySortedModel)
+        except Exception:
+            pass
+        self.completer.setWidget(self.editor)
+        self.completer.activated[str].connect(self.insert_completion)
+
+        # Install event filter to trigger/show the completer
+        self.editor.installEventFilter(self)
+
+        # Distinguish function names for optional () insertion
+        self.functions_set = set(DAX_FUNCTIONS)
+
+        # Track last prefix to avoid redundant refresh
+        self._last_prefix = None
+
+    # Event filter must be on an QObject, so forward to instance method
+    def eventFilter(self, obj, event):
+        if obj is self.editor:
+            et = event.type()
+            if et == QEvent.Type.KeyPress:
+                key = event.key()
+                modifiers = event.modifiers()
+                ctrl = modifiers & Qt.KeyboardModifier.ControlModifier
+
+                if ctrl and key == Qt.Key.Key_Space:
+                    prefix = self.current_word()
+                    if prefix:
+                        self.show_completions(prefix)
+                    else:
+                        self.completer.complete(self.editor.cursorRect())
+                    return True
+
+                # Hide on commit/navigation keys
+                if key in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
+                    self.completer.popup().hide()
+                    return False
+
+                # Update suggestions as user types letters, underscore, or deletes
+                ch = event.text()
+                if (ch and (ch.isalnum() or ch == '_')) or key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+                    prefix = self.current_word()
+                    if prefix and len(prefix) >= 1:
+                        if prefix != self._last_prefix:
+                            self._last_prefix = prefix
+                            self.show_completions(prefix)
+                    else:
+                        self._last_prefix = None
+                        self.completer.popup().hide()
+                else:
+                    # Non-word character typed -> hide suggestions
+                    self._last_prefix = None
+                    self.completer.popup().hide()
+            elif et == QEvent.Type.FocusOut:
+                self.completer.popup().hide()
+        return False
+
+    def current_word(self) -> str:
+        """Return the word (letters/digits/underscore) surrounding the cursor."""
+        cursor: QTextCursor = self.editor.textCursor()
+        block_text = cursor.block().text()
+        pos = cursor.positionInBlock()
+        # Scan left
+        l = pos
+        while l > 0 and (block_text[l-1].isalnum() or block_text[l-1] == '_'):
+            l -= 1
+        # Scan right
+        r = pos
+        while r < len(block_text) and (block_text[r].isalnum() or block_text[r] == '_'):
+            r += 1
+        return block_text[l:r]
+
+    def show_completions(self, prefix: str):
+        self.completer.setCompletionPrefix(prefix)
+        popup = self.completer.popup()
+        # Ensure width fits content
+        try:
+            width = popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width() + 8
+            rect = self.editor.cursorRect()
+            rect.setWidth(width)
+            self.completer.complete(rect)
+        except Exception:
+            self.completer.complete(self.editor.cursorRect())
+
+    def insert_completion(self, completion: str):
+        cursor: QTextCursor = self.editor.textCursor()
+        cursor.beginEditBlock()
+
+        # Replace the word under cursor with the completion
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        cursor.removeSelectedText()
+        cursor.insertText(completion)
+
+        # If it's a function and the next char isn't '(', insert parentheses
+        if completion.upper() in self.functions_set:
+            next_char = self._next_char_after_cursor(cursor)
+            if next_char != '(':
+                cursor.insertText('()')
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+
+        cursor.endEditBlock()
+        self.editor.setTextCursor(cursor)
+
+    def _next_char_after_cursor(self, cursor: QTextCursor) -> str:
+        temp = QTextCursor(cursor)
+        temp.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, 1)
+        return temp.selectedText()
