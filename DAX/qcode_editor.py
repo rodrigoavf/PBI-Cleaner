@@ -3,12 +3,16 @@ from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QPlainTextEdit, QCompleter
 
 # Optional: known function names to auto-insert parentheses for
+# Prefer the local DAX module; fall back to Tabs if present
 try:
-    # Tabs is an implicit namespace package in this project
-    from Tabs.dax_editor_support import DAX_FUNCTIONS as _DAX_FUNCTIONS
-    _FUNC_SET = {name.upper() for name in _DAX_FUNCTIONS}
+    from DAX.dax_editor_support import DAX_FUNCTIONS as _DAX_FUNCTIONS
 except Exception:
-    _FUNC_SET = set()
+    try:
+        from DAX.dax_editor_support import DAX_FUNCTIONS as _DAX_FUNCTIONS
+    except Exception:
+        _DAX_FUNCTIONS = []
+
+_FUNC_SET = {str(name).upper() for name in _DAX_FUNCTIONS}
 
 
 class QCodeEditor(QPlainTextEdit):
