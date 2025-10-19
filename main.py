@@ -5,7 +5,7 @@ from PyQt6.QtGui import QIcon
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon("logo.png"))
+    app.setWindowIcon(QIcon("Images/logo - blue.png"))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -4,13 +4,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QFileDialog, QLineEdit, QMessageBox
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PBI Cleaner")
+        self.setWindowTitle("Tentacles")
         self.setMinimumSize(1000, 500)
 
         self.pbip_path = None
@@ -23,19 +24,18 @@ class MainWindow(QMainWindow):
         start_layout = QVBoxLayout()
         start_layout.setContentsMargins(60, 40, 60, 40)
         start_layout.setSpacing(20)
-
-        # --- Program title ---
-        title = QLabel("PBI Cleaner")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 28pt; font-weight: bold; margin-bottom: 10px;")
-
-        subtitle = QLabel("Your Power BI Project Companion")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("font-size: 12pt; color: gray; margin-bottom: 20px;")
+        
+        # Add logo image
+        logo_label = QLabel()
+        logo = QPixmap(os.path.join(os.path.dirname(__file__), "Images", "Full_Logo.png"))
+        target_height = 100
+        logo = logo.scaledToHeight(target_height, Qt.TransformationMode.SmoothTransformation)
+        logo_label.setPixmap(logo)
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # --- Description area ---
         description = QLabel(
-            "PBI Cleaner helps you explore and organize your Power BI Project files "
+            "Tentacles helps you explore and organize your Power BI Project files "
             "in an intuitive way. Select your <b>.pbip</b> project to get started — "
             "then use the tools to search, organize, and clean your data model."
         )
@@ -94,8 +94,7 @@ class MainWindow(QMainWindow):
         credit_label.setStyleSheet("color: gray; font-size: 10pt; margin-top: 40px;")
 
         # --- Add widgets to layout ---
-        start_layout.addWidget(title)
-        start_layout.addWidget(subtitle)
+        start_layout.addWidget(logo_label)
         start_layout.addWidget(description)
         start_layout.addWidget(features_title)
         start_layout.addWidget(features_text)
