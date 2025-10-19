@@ -106,6 +106,11 @@ class MainWindow(QMainWindow):
 
         start_widget.setLayout(start_layout)
         self.setCentralWidget(start_widget)
+        self.setup_shortcuts()
+
+    def setup_shortcuts(self):
+        """Register keyboard shortcuts for main window actions."""
+        self.file_input.returnPressed.connect(self.load_main_tabs)
 
     def select_pbip_file(self):
         file_path, _ = QFileDialog.getOpenFileName(

@@ -4,9 +4,12 @@ import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QProgressBar,
-    QSizePolicy
+    QSizePolicy, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import (
+    QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence
+)
 from common_functions import count_files
 
 valid_extensions = {".json", ".tmdl"}
@@ -43,7 +46,7 @@ def find_files_with_target(root_dir, target, before=20, after=20, update_callbac
 class FileSearchApp(QWidget):
     def __init__(self, pbip_file: str = None):
         super().__init__()
-        self.setMinimumSize(1000, 600)
+        self.setMinimumWidth(300)
         self.sort_states = [None, None, None, None]
         self.last_clicked_row = None
         self.pbip_file = pbip_file
@@ -71,7 +74,7 @@ class FileSearchApp(QWidget):
         context_layout.addWidget(self.after_input)
         context_layout.addStretch()
 
-        self.search_button = QPushButton("Search")
+        self.search_button = QPushButton("🔍 Search")
         self.search_button.clicked.connect(self.start_search)
 
         self.table = QTableWidget()
@@ -81,7 +84,8 @@ class FileSearchApp(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setWordWrap(False)
-        self.table.setStyleSheet("QTableWidget::item:selected { background-color: #0078d4; }")
+        self.table.setMinimumHeight(0)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         self.table.horizontalHeader().sectionClicked.connect(self.sort_by_column)
         self.table.itemSelectionChanged.connect(self.update_buttons_state)
         self.table.viewport().installEventFilter(self)
@@ -115,7 +119,7 @@ class FileSearchApp(QWidget):
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        footer_widget.setMinimumHeight(36)
+        footer_widget.setFixedHeight(30)
 
         progress_layout = QHBoxLayout(footer_widget)
         progress_layout.setContentsMargins(0, 4, 0, 4)
@@ -123,15 +127,29 @@ class FileSearchApp(QWidget):
         progress_layout.addWidget(self.status)
         progress_layout.addWidget(self.progress_bar)
 
+        # Build scrollable content section (everything above footer)
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content_layout.addLayout(target_layout)
+        content_layout.addLayout(context_layout)
+        content_layout.addWidget(self.search_button)
+        content_layout.addLayout(actions_layout)
+        content_layout.addWidget(self.table, 1)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(content_widget)
+
         main_layout = QVBoxLayout()
-        main_layout.addLayout(target_layout)
-        main_layout.addLayout(context_layout)
-        main_layout.addWidget(self.search_button)
-        main_layout.addLayout(actions_layout)
-        main_layout.addWidget(self.table, 1)
-        main_layout.addWidget(footer_widget)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(8)
+        main_layout.addWidget(scroll_area, 1)
+        main_layout.addWidget(footer_widget, alignment=Qt.AlignmentFlag.AlignBottom)
 
         self.setLayout(main_layout)
+        self.setup_shortcuts()
 
     def start_search(self):
         if not self.pbip_file or not os.path.isfile(self.pbip_file):
@@ -178,6 +196,22 @@ class FileSearchApp(QWidget):
             return
 
         self.populate_table(hits)
+
+    def setup_shortcuts(self):
+        # Line edits: use their native signal
+        self.target_input.returnPressed.connect(self.start_search)
+        self.before_input.returnPressed.connect(self.start_search)
+        self.after_input.returnPressed.connect(self.start_search)
+
+        # Delete anywhere in the window
+        self.delete_button_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.table)
+        self.delete_button_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.delete_button_shortcut.activated.connect(self.delete_selected_file)
+
+        # Enter in the table opens the selected folder
+        self.open_button_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self.table)
+        self.open_button_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.open_button_shortcut.activated.connect(self.open_selected_folder)
 
     def populate_table(self, hits):
         self.table.setRowCount(len(hits))
@@ -275,7 +309,7 @@ class FileSearchApp(QWidget):
         reply = QMessageBox.question(
             self,
             "Delete Confirmation",
-            f"Are you sure you want to delete:\n{path}?",
+            f"Are you sure you want to delete:\n{path}?\n\n⚠️ This action cannot be undone. Use at your own risk!",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
 
