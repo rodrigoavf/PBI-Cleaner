@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         measures_tab = QWidget()
         tables_tab = QWidget()
         columns_tab = QWidget()
+        power_query_tab = QWidget()
         search_tab = FileSearchApp(self.pbip_path)
 
         # Set up placeholder content for unimplemented tabs
@@ -154,6 +155,7 @@ class MainWindow(QMainWindow):
             (measures_tab, "Measures"),
             (tables_tab, "Tables"),
             (columns_tab, "Columns"),
+            (power_query_tab, "Power Query"),
         ]:
             layout = QVBoxLayout()
             layout.addWidget(QLabel(f"Coming soon: {label} section"))
@@ -164,6 +166,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(measures_tab, "Measures")
         tabs.addTab(tables_tab, "Tables")
         tabs.addTab(columns_tab, "Columns")
+        tabs.addTab(power_query_tab, "Power Query")
         tabs.addTab(search_tab, "Search Files")
 
         info_widget = QWidget()
