@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Sequence
+
 from PyQt6.QtCore import Qt, QEvent, QRegularExpression, QObject
 from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QTextCursor
 from PyQt6.QtWidgets import QCompleter
@@ -334,3 +337,36 @@ class DAXAutoCompleter(QObject):
         temp = QTextCursor(cursor)
         temp.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, 1)
         return temp.selectedText()
+
+
+@dataclass(frozen=True)
+class LanguageDefinition:
+    """Container describing syntax support for a code editor language."""
+
+    name: str
+    keywords: Sequence[str]
+    functions: Sequence[str]
+    highlighter_cls: type[QSyntaxHighlighter] | None = None
+    line_comment: str | None = None
+
+    def completions(self) -> list[str]:
+        """Return deduplicated, sorted completion terms."""
+        return sorted({*(self.keywords or ()), *(self.functions or ())})
+
+
+_LANGUAGE_DEFINITIONS: dict[str, LanguageDefinition] = {
+    'dax': LanguageDefinition(
+        name='dax',
+        keywords=DAX_KEYWORDS,
+        functions=DAX_FUNCTIONS,
+        highlighter_cls=DAXHighlighter,
+        line_comment='//',
+    ),
+}
+
+
+def get_language_definition(language: str | None) -> LanguageDefinition | None:
+    """Return the language definition for the given key, if available."""
+    if not language:
+        return None
+    return _LANGUAGE_DEFINITIONS.get(language.lower())

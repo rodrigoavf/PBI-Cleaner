@@ -2,13 +2,10 @@ import os
 import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
-    QListWidgetItem, QTextEdit, QSplitter, QMessageBox, QLabel
+    QListWidgetItem, QSplitter, QMessageBox, QLabel
 )
-from PyQt6.QtCore import Qt, QMimeData
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent
-from PyQt6.QtCore import QStringListModel
-from PyQt6.QtWidgets import QCompleter
-from DAX.dax_editor_support import DAXHighlighter, DAX_KEYWORDS, DAX_FUNCTIONS
 from DAX.qcode_editor import QCodeEditor
 
 class DAXQueryTab(QWidget):
@@ -47,7 +44,7 @@ class DAXQueryTab(QWidget):
         # Left side - Query list
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(0, 0, 6, 0)
 
         # Query list with drag-drop support
         self.query_list = QListWidget()
@@ -63,7 +60,7 @@ class DAXQueryTab(QWidget):
             self.query_list.model().rowsMoved.connect(self.on_query_order_changed)
         except Exception:
             pass
-        left_layout.addWidget(QLabel("DAX Queries:"))
+        left_layout.addWidget(QLabel("DAX Queries"))
         left_layout.addWidget(self.query_list)
 
         # Make Default button
@@ -75,11 +72,11 @@ class DAXQueryTab(QWidget):
         # Right side - Query editor
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(6, 0, 0, 0)
 
         # Query editor
-        right_layout.addWidget(QLabel("Query DAX Code:"))
-        self.query_editor = QCodeEditor()
+        right_layout.addWidget(QLabel("DAX Query Code"))
+        self.query_editor = QCodeEditor(language='dax')
         self.query_editor.setFont(QFont("Consolas", 10))
         # Make tab width smaller (2 spaces worth)
         try:
@@ -90,30 +87,11 @@ class DAXQueryTab(QWidget):
         self.query_editor.textChanged.connect(self.on_text_changed)
         right_layout.addWidget(self.query_editor)
 
-        # Attach DAX syntax highlighting and IntelliSense
-        try:
-            self._dax_highlighter = DAXHighlighter(self.query_editor.document())
-            self._dax_highlighter.rehighlight()
-        except Exception:
-            self._dax_highlighter = None
-        try:
-            # Build a dedicated DAX completer
-            completions = sorted(set([*DAX_KEYWORDS, *DAX_FUNCTIONS]))
-            # Parent the model to the editor to keep it alive
-            model = QStringListModel(completions, self.query_editor)
-            completer = QCompleter(model, self.query_editor)
-            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            completer.setFilterMode(Qt.MatchFlag.MatchContains)
-            completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-            try:
-                completer.setModelSorting(QCompleter.ModelSorting.CaseInsensitivelySortedModel)
-            except Exception:
-                pass
-            self.query_editor.setCompleter(completer)
-            self._dax_completer = completer
-            self._dax_model = model
-        except Exception:
-            self._dax_completer = None
+        # Hotkey hints
+        hotkey_hint = QLabel("Hotkeys - Ctrl+K+C: Comment   |   Ctrl+K+U: Uncomment   |   Alt+Up: Move line up   |   Alt+Down: Move line down")
+        hotkey_hint.setStyleSheet("color: #666666; font-size: 10px;")
+        hotkey_hint.setWordWrap(True)
+        right_layout.addWidget(hotkey_hint)
 
         # Add widgets to splitter
         splitter.addWidget(left_widget)
