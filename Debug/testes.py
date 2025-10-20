@@ -127,4 +127,4 @@ for filename in os.listdir(tables_tmdl):
         }
 
 # Show the final json
-print(json.dumps(tables_data, indent=4))
+#print(json.dumps(tables_data, indent=4))

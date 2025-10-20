@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QMenu,
 )
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QImage
 from Coding.code_editor import CodeEditor
@@ -27,6 +28,13 @@ from common_functions import code_editor_font, APP_THEME
 class PowerQueryTab(QWidget):
     """Tab that surfaces Power Query table metadata with editable details."""
 
+    TYPE_ROLE = Qt.ItemDataRole.UserRole + 1
+    KEY_ROLE = Qt.ItemDataRole.UserRole + 2
+    ITEM_FOLDER = "folder"
+    ITEM_TABLE = "table"
+    ITEM_COLUMN = "column"
+    OTHER_QUERIES_NAME = "Other Queries"
+
     def __init__(self, pbip_file: Optional[str] = None):
         super().__init__()
         self.pbip_file = pbip_file
@@ -35,6 +43,8 @@ class PowerQueryTab(QWidget):
         self.query_groups = {}
         self.current_table: Optional[str] = None
         self.ignore_editor_changes = False
+        self._ignore_tree_changes = False
+        self._ignore_item_change = False
         self.init_ui()
         if pbip_file:
             self.load_tables()
@@ -51,10 +61,18 @@ class PowerQueryTab(QWidget):
         self.refresh_button.clicked.connect(self.refresh_tables)
         top_bar.addWidget(self.refresh_button)
 
-        self.open_pbip_button = QPushButton("Open PBIP...")
-        self.open_pbip_button.setToolTip("Select a PBIP file to load Power Query metadata")
-        self.open_pbip_button.clicked.connect(self.choose_pbip_file)
-        top_bar.addWidget(self.open_pbip_button)
+        self.expand_button = QPushButton("Expand All")
+        self.expand_button.clicked.connect(self.expand_all_groups)
+        top_bar.addWidget(self.expand_button)
+
+        self.collapse_button = QPushButton("Collapse All")
+        self.collapse_button.clicked.connect(self.collapse_all_groups)
+        top_bar.addWidget(self.collapse_button)
+
+        self.sort_button = QPushButton("Sort A-Z")
+        self.sort_button.setToolTip("Sort folders and tables alphabetically (Other Queries stays last)")
+        self.sort_button.clicked.connect(self.sort_folders_and_tables)
+        top_bar.addWidget(self.sort_button)
 
         top_bar.addStretch()
         main_layout.addLayout(top_bar)
@@ -72,6 +90,18 @@ class PowerQueryTab(QWidget):
         self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         left_layout.addWidget(self.table_tree)
+        self.table_tree.setDragEnabled(True)
+        self.table_tree.setAcceptDrops(True)
+        self.table_tree.setDropIndicatorShown(True)
+        self.table_tree.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.table_tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        self.table_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
+        self.table_tree.itemChanged.connect(self.on_tree_item_changed)
+        try:
+            self.table_tree.model().rowsMoved.connect(self.on_tree_structure_changed)
+        except Exception:
+            pass
 
         icon_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "Images", "icons"))
 
@@ -92,6 +122,7 @@ class PowerQueryTab(QWidget):
             "m": _load_icon("Table.svg"),
             "calculated": _load_icon("Calculated-Table.svg"),
         }
+        self.folder_icon = _load_icon("Folder.svg")
 
         splitter.addWidget(left_widget)
 
@@ -327,11 +358,15 @@ class PowerQueryTab(QWidget):
 
     def populate_tree(self):
         """Populate the tree view with tables and their columns."""
+        self._ignore_item_change = True
+        self._ignore_tree_changes = True
         self.table_tree.blockSignals(True)
         self.table_tree.clear()
 
         if not self.tables_data:
             self.table_tree.blockSignals(False)
+            self._ignore_tree_changes = False
+            self._ignore_item_change = False
             return
 
         if self.query_order:
@@ -341,29 +376,48 @@ class PowerQueryTab(QWidget):
         else:
             sorted_tables = sorted(self.tables_data.keys(), key=str.casefold)
 
+        group_map: dict[Optional[str], list[str]] = {}
         for table_name in sorted_tables:
-            table_item = QTreeWidgetItem([table_name])
-            table_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
-            table_type = (self.tables_data.get(table_name, {}).get("table_type") or "").lower()
-            icon = self.table_icons.get(table_type)
-            if icon and not icon.isNull():
-                table_item.setIcon(0, icon)
+            info = self.tables_data.get(table_name, {})
+            group_key = info.get("query_group") or None
+            group_map.setdefault(group_key, []).append(table_name)
 
-            for column in self.tables_data.get(table_name, {}).get("columns", []):
-                column_item = QTreeWidgetItem([column])
-                column_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
-                table_item.addChild(column_item)
+        if None not in group_map:
+            group_map[None] = []
 
-            table_item.setExpanded(False)
-            self.table_tree.addTopLevelItem(table_item)
+        table_order = {name.lower(): idx for idx, name in enumerate(self.query_order)}
+
+        def table_sort_key(name: str):
+            return (table_order.get(name.lower(), len(table_order)), name.lower())
+
+        group_order_list = []
+        for group_key in group_map:
+            if group_key is None:
+                display_name = self.OTHER_QUERIES_NAME
+                group_order_list.append((1, float('inf'), display_name.lower(), group_key, display_name))
+            else:
+                order_val = self.query_groups.get(group_key, float('inf'))
+                display_name = group_key
+                group_order_list.append((0, order_val, display_name.lower(), group_key, display_name))
+        group_order_list.sort()
+
+        for _, _, _, group_key, display_name in group_order_list:
+            group_item = self._create_folder_item(group_key, display_name)
+            self.table_tree.addTopLevelItem(group_item)
+
+            tables_in_group = sorted(group_map.get(group_key, []), key=table_sort_key)
+            for table_name in tables_in_group:
+                table_item = self._create_table_item(table_name, group_key)
+                group_item.addChild(table_item)
 
         self.table_tree.blockSignals(False)
-
-        # Select the first table by default.
-        first_item = self.table_tree.topLevelItem(0)
-        if first_item:
-            self.table_tree.setCurrentItem(first_item)
-            self.display_table_details(first_item.data(0, Qt.ItemDataRole.UserRole))
+        self.ensure_other_queries_last()
+        self.table_tree.collapseAll()
+        self.table_tree.clearSelection()
+        self.display_table_details(None)
+        self._ignore_tree_changes = False
+        self._ignore_item_change = False
+        self.on_tree_structure_changed()
 
     def on_tree_selection_changed(self):
         """Update detail pane when the selection changes."""
@@ -372,10 +426,21 @@ class PowerQueryTab(QWidget):
             self.display_table_details(None)
             return
 
+        item_type = current_item.data(0, self.TYPE_ROLE)
+        if item_type == self.ITEM_FOLDER:
+            self.display_table_details(None)
+            return
+
+        if item_type == self.ITEM_COLUMN:
+            parent = current_item.parent()
+            if parent:
+                table_name = parent.data(0, Qt.ItemDataRole.UserRole)
+                self.display_table_details(table_name)
+            else:
+                self.display_table_details(None)
+            return
+
         table_name = current_item.data(0, Qt.ItemDataRole.UserRole)
-        if current_item.parent() is not None:
-            # Ensure the parent table item holds the detail context.
-            table_name = current_item.parent().data(0, Qt.ItemDataRole.UserRole)
         self.display_table_details(table_name)
 
     def display_table_details(self, table_name: Optional[str]):
@@ -435,7 +500,9 @@ class PowerQueryTab(QWidget):
 
     def clear_details(self):
         """Reset detail pane and selection state."""
+        self._ignore_tree_changes = True
         self.table_tree.clear()
+        self._ignore_tree_changes = False
         self.current_table = None
         self.ignore_editor_changes = True
         self.query_label.setText("Query")
@@ -446,3 +513,282 @@ class PowerQueryTab(QWidget):
         self.import_mode_combo.blockSignals(False)
         self.import_mode_combo.setEnabled(False)
         self.ignore_editor_changes = False
+
+    def expand_all_groups(self):
+        self.table_tree.expandAll()
+
+    def collapse_all_groups(self):
+        self.table_tree.collapseAll()
+
+    def sort_folders_and_tables(self):
+        if self.table_tree.topLevelItemCount() == 0:
+            return
+        self._ignore_tree_changes = True
+        current_item = self.table_tree.currentItem()
+        folders = []
+        other_item = None
+        while self.table_tree.topLevelItemCount():
+            item = self.table_tree.takeTopLevelItem(0)
+            key = item.data(0, self.KEY_ROLE)
+            if key is None:
+                other_item = item
+            else:
+                folders.append(item)
+        folders.sort(key=lambda itm: itm.text(0).lower())
+        for folder in folders:
+            self.sort_tables_in_folder(folder)
+            self.table_tree.addTopLevelItem(folder)
+        if other_item:
+            self.sort_tables_in_folder(other_item)
+            self.table_tree.addTopLevelItem(other_item)
+        self.ensure_other_queries_last()
+        self._ignore_tree_changes = False
+        self.on_tree_structure_changed()
+        if current_item:
+            self.table_tree.setCurrentItem(current_item)
+
+    def sort_tables_in_folder(self, folder_item: QTreeWidgetItem):
+        tables = []
+        for i in range(folder_item.childCount()):
+            child = folder_item.child(i)
+            if child.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
+                tables.append(child)
+        if not tables:
+            return
+        for child in tables:
+            folder_item.removeChild(child)
+        tables.sort(key=lambda itm: itm.text(0).lower())
+        for child in tables:
+            self.ensure_columns_sorted(child)
+            folder_item.addChild(child)
+
+    def ensure_columns_sorted(self, table_item: QTreeWidgetItem):
+        columns = []
+        for i in range(table_item.childCount()):
+            column_item = table_item.child(i)
+            if column_item.data(0, self.TYPE_ROLE) == self.ITEM_COLUMN:
+                columns.append(column_item)
+        if not columns:
+            return
+        for column_item in columns:
+            table_item.removeChild(column_item)
+        columns.sort(key=lambda itm: itm.text(0).lower())
+        for column_item in columns:
+            table_item.addChild(column_item)
+
+    def show_tree_context_menu(self, position):
+        menu = QMenu(self.table_tree)
+        new_folder_action = menu.addAction("New Folder")
+        rename_action = None
+        delete_action = None
+
+        item = self.table_tree.itemAt(position)
+        if item and item.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER and item.data(0, self.KEY_ROLE) is not None:
+            rename_action = menu.addAction("Rename Folder")
+            delete_action = menu.addAction("Delete Folder")
+
+        global_pos = self.table_tree.viewport().mapToGlobal(position)
+        chosen = menu.exec(global_pos)
+
+        if chosen == new_folder_action:
+            self.create_new_folder()
+        elif rename_action and chosen == rename_action:
+            self.rename_folder(item)
+        elif delete_action and chosen == delete_action:
+            self.delete_folder(item)
+
+    def create_new_folder(self):
+        name = self.generate_unique_folder_name("New Folder")
+        folder_item = self._create_folder_item(name, name)
+        other_item = self.find_other_queries_item()
+        if other_item:
+            idx = self.table_tree.indexOfTopLevelItem(other_item)
+            self.table_tree.insertTopLevelItem(idx, folder_item)
+        else:
+            self.table_tree.addTopLevelItem(folder_item)
+        max_order = max(self.query_groups.values(), default=-1)
+        self.query_groups[name] = max_order + 1
+        self.table_tree.setCurrentItem(folder_item)
+        self.table_tree.editItem(folder_item)
+        self.on_tree_structure_changed()
+
+    def rename_folder(self, item: QTreeWidgetItem):
+        if not item or item.data(0, self.TYPE_ROLE) != self.ITEM_FOLDER:
+            return
+        if item.data(0, self.KEY_ROLE) is None:
+            return
+        self.table_tree.editItem(item)
+
+    def delete_folder(self, item: QTreeWidgetItem):
+        if not item or item.data(0, self.TYPE_ROLE) != self.ITEM_FOLDER:
+            return
+        folder_key = item.data(0, self.KEY_ROLE)
+        if folder_key is None:
+            return
+        other_item = self.ensure_other_queries_folder()
+        while item.childCount():
+            child = item.takeChild(0)
+            if child.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
+                other_item.addChild(child)
+        self.sort_tables_in_folder(other_item)
+        idx = self.table_tree.indexOfTopLevelItem(item)
+        self.table_tree.takeTopLevelItem(idx)
+        self.query_groups.pop(folder_key, None)
+        self.ensure_other_queries_last()
+        self.on_tree_structure_changed()
+
+    def generate_unique_folder_name(self, base: str) -> str:
+        existing = {self.table_tree.topLevelItem(i).text(0).lower() for i in range(self.table_tree.topLevelItemCount())}
+        existing.add(self.OTHER_QUERIES_NAME.lower())
+        candidate = base
+        suffix = 1
+        while candidate.lower() in existing:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        return candidate
+
+    def on_tree_item_changed(self, item: QTreeWidgetItem, column: int):
+        if self._ignore_item_change or not item:
+            return
+        if item.data(0, self.TYPE_ROLE) != self.ITEM_FOLDER:
+            return
+        folder_key = item.data(0, self.KEY_ROLE)
+        new_name = item.text(0).strip()
+        if folder_key is None:
+            self._ignore_item_change = True
+            item.setText(0, self.OTHER_QUERIES_NAME)
+            self._ignore_item_change = False
+            return
+        if not new_name:
+            self._ignore_item_change = True
+            item.setText(0, folder_key)
+            self._ignore_item_change = False
+            return
+        # Ensure uniqueness
+        for i in range(self.table_tree.topLevelItemCount()):
+            other = self.table_tree.topLevelItem(i)
+            if other is item:
+                continue
+            if other.text(0).strip().lower() == new_name.lower():
+                self._ignore_item_change = True
+                item.setText(0, folder_key)
+                self._ignore_item_change = False
+                return
+        if new_name == folder_key:
+            return
+        self._ignore_item_change = True
+        item.setText(0, new_name)
+        item.setData(0, self.KEY_ROLE, new_name)
+        self._ignore_item_change = False
+        order_val = self.query_groups.pop(folder_key, len(self.query_groups))
+        self.query_groups[new_name] = order_val
+        self.on_tree_structure_changed()
+
+    def on_tree_structure_changed(self, *args, **kwargs):
+        if self._ignore_tree_changes:
+            return
+        self._ignore_tree_changes = True
+        try:
+            current_item = self.table_tree.currentItem()
+            self.ensure_other_queries_last()
+
+            for idx in range(self.table_tree.topLevelItemCount()):
+                folder = self.table_tree.topLevelItem(idx)
+                child_idx = folder.childCount() - 1
+                while child_idx >= 0:
+                    child = folder.child(child_idx)
+                    if child.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER:
+                        folder.takeChild(child_idx)
+                        self.table_tree.addTopLevelItem(child)
+                    child_idx -= 1
+            self.ensure_other_queries_last()
+
+            new_group_order: dict[str, int] = {}
+            order = 0
+            for idx in range(self.table_tree.topLevelItemCount()):
+                folder = self.table_tree.topLevelItem(idx)
+                folder_key = folder.data(0, self.KEY_ROLE)
+                if folder_key is not None:
+                    new_group_order[folder_key] = order
+                    order += 1
+                for child_idx in range(folder.childCount()):
+                    child = folder.child(child_idx)
+                    item_type = child.data(0, self.TYPE_ROLE)
+                    if item_type == self.ITEM_TABLE:
+                        table_name = child.data(0, Qt.ItemDataRole.UserRole)
+                        self.tables_data[table_name]["query_group"] = folder_key
+                        child.setData(0, self.KEY_ROLE, folder_key)
+                        self.ensure_columns_sorted(child)
+                    elif item_type == self.ITEM_COLUMN:
+                        parent = child.parent()
+                        if parent:
+                            table_name = parent.data(0, Qt.ItemDataRole.UserRole)
+                            child.setData(0, Qt.ItemDataRole.UserRole, table_name)
+            self.query_groups = new_group_order
+            if current_item:
+                self.table_tree.setCurrentItem(current_item)
+        finally:
+            self._ignore_tree_changes = False
+
+    def _create_folder_item(self, group_key: Optional[str], display_name: str) -> QTreeWidgetItem:
+        folder_item = QTreeWidgetItem([display_name])
+        folder_item.setData(0, self.TYPE_ROLE, self.ITEM_FOLDER)
+        folder_item.setData(0, self.KEY_ROLE, group_key)
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDropEnabled
+        if group_key is not None:
+            flags |= Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsEditable
+        folder_item.setFlags(flags)
+        if self.folder_icon and not self.folder_icon.isNull():
+            folder_item.setIcon(0, self.folder_icon)
+        folder_item.setExpanded(False)
+        return folder_item
+
+    def _create_table_item(self, table_name: str, group_key: Optional[str]) -> QTreeWidgetItem:
+        table_item = QTreeWidgetItem([table_name])
+        table_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
+        table_item.setData(0, self.TYPE_ROLE, self.ITEM_TABLE)
+        table_item.setData(0, self.KEY_ROLE, group_key)
+        flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
+        table_item.setFlags(flags)
+        table_type = (self.tables_data.get(table_name, {}).get("table_type") or "").lower()
+        icon = self.table_icons.get(table_type)
+        if icon and not icon.isNull():
+            table_item.setIcon(0, icon)
+
+        columns = sorted(self.tables_data.get(table_name, {}).get("columns", []), key=str.casefold)
+        for column in columns:
+            column_item = QTreeWidgetItem([column])
+            column_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
+            column_item.setData(0, self.TYPE_ROLE, self.ITEM_COLUMN)
+            column_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            table_item.addChild(column_item)
+        return table_item
+
+    def ensure_other_queries_folder(self) -> QTreeWidgetItem:
+        item = self.find_other_queries_item()
+        if item:
+            return item
+        item = self._create_folder_item(None, self.OTHER_QUERIES_NAME)
+        self.table_tree.addTopLevelItem(item)
+        self.ensure_other_queries_last()
+        return item
+
+    def ensure_other_queries_last(self):
+        other = self.find_other_queries_item()
+        if not other:
+            return
+        idx = self.table_tree.indexOfTopLevelItem(other)
+        if idx == -1 or idx == self.table_tree.topLevelItemCount() - 1:
+            return
+        current_item = self.table_tree.currentItem()
+        other = self.table_tree.takeTopLevelItem(idx)
+        self.table_tree.addTopLevelItem(other)
+        if current_item:
+            self.table_tree.setCurrentItem(current_item)
+
+    def find_other_queries_item(self) -> Optional[QTreeWidgetItem]:
+        for i in range(self.table_tree.topLevelItemCount()):
+            item = self.table_tree.topLevelItem(i)
+            if item.data(0, self.KEY_ROLE) is None:
+                return item
+        return None
