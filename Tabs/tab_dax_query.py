@@ -118,7 +118,7 @@ class DAXQueryTab(QWidget):
         right_layout.addWidget(hotkey_hint_right)
 
         # Hotkey hints - left
-        hotkey_hint_left = QLabel("F2: Rename Selected\nDelete: Delete selected\nCtrl+N: New query\nSpace: Set as default\nAlt+Up: Move up\nAlt+Down: Move down")
+        hotkey_hint_left = QLabel("F2: Rename\nDelete: Delete\nCtrl+N: New query\nSpace: Set as default\nAlt+Up: Move up\nAlt+Down: Move down")
         hotkey_hint_left.setStyleSheet("color: #666666; font-size: 10px;")
         hotkey_hint_left.setWordWrap(True)
         left_layout.addWidget(hotkey_hint_left)
