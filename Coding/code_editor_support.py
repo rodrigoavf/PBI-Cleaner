@@ -43,7 +43,7 @@ DAX_FUNCTIONS = [
     'ALLEXCEPT', 'REMOVEFILTERS', 'KEEPFILTERS', 'VALUES', 'DISTINCT',
     'CROSSFILTER', 'USERELATIONSHIP', 'RELATED', 'RELATEDTABLE',
     'LOOKUPVALUE', 'EARLIER', 'EARLIEST', 'ISINSCOPE', 'HASONEFILTER',
-    'HASONEVALUE',
+    'HASONEVALUE', 'TREATAS', 'ISFILTERED', 'ISCROSSFILTERED',
 
     # Time Intelligence
     'DATEADD', 'DATESINPERIOD', 'DATESBETWEEN', 'DATESYTD', 'DATESMTD',
@@ -88,7 +88,8 @@ DAX_FUNCTIONS = [
     'ISO.CEILING',
 
     # Metadata / Info functions
-    'USERNAME', 'USERPRINCIPALNAME', 'CUSTOMDATA',
+    'USERNAME', 'USERPRINCIPALNAME', 'CUSTOMDATA', 'INFO.VIEW.COLUMNS', 'INFO.VIEW.TABLES', 'INFO.VIEW.MEASURES',
+    'INFO.VIEW.RELATIONSHIPS', 
     
     # Query / Table output
     'DATATABLE', 'SUMMARIZE', 'SUMMARIZECOLUMNS',
@@ -285,11 +286,19 @@ class DAXHighlighter(QSyntaxHighlighter):
             comment_spans.append((m.capturedStart(), m.capturedLength()))
 
         # Strings
+        string_spans: list[tuple[int, int]] = []
+
         it = self.re_string.globalMatch(text)
         while it.hasNext():
             m = it.next()
-            if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
-                self.setFormat(m.capturedStart(), m.capturedLength(), self.f_string)
+            start = m.capturedStart()
+            length = m.capturedLength()
+            if self._span_overlaps(comment_spans, start, length):
+                continue
+            string_spans.append((start, length))
+            if start > 0 and text[start - 1] == '#':
+                continue
+            self.setFormat(start, length, self.f_string)
 
         # Numbers
         it = self.re_number.globalMatch(text)
@@ -400,11 +409,19 @@ class MHighlighter(QSyntaxHighlighter):
             m = it.next()
             comment_spans.append((m.capturedStart(), m.capturedLength()))
 
+        string_spans: list[tuple[int, int]] = []
+
         it = self.re_string.globalMatch(text)
         while it.hasNext():
             m = it.next()
-            if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
-                self.setFormat(m.capturedStart(), m.capturedLength(), self.f_string)
+            start = m.capturedStart()
+            length = m.capturedLength()
+            if self._span_overlaps(comment_spans, start, length):
+                continue
+            string_spans.append((start, length))
+            if start > 0 and text[start - 1] == '#':
+                continue
+            self.setFormat(start, length, self.f_string)
 
         it = self.re_number.globalMatch(text)
         while it.hasNext():
@@ -412,18 +429,20 @@ class MHighlighter(QSyntaxHighlighter):
             if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
                 self.setFormat(m.capturedStart(), m.capturedLength(), self.f_number)
 
+        excluded_spans = comment_spans + string_spans
+
         if self.re_function:
             it = self.re_function.globalMatch(text)
             while it.hasNext():
                 m = it.next()
-                if not self._span_overlaps(comment_spans, m.capturedStart(1), m.capturedLength(1)):
+                if not self._span_overlaps(excluded_spans, m.capturedStart(1), m.capturedLength(1)):
                     self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_function)
 
         if self.re_keyword:
             it = self.re_keyword.globalMatch(text)
             while it.hasNext():
                 m = it.next()
-                if not self._span_overlaps(comment_spans, m.capturedStart(1), m.capturedLength(1)):
+                if not self._span_overlaps(excluded_spans, m.capturedStart(1), m.capturedLength(1)):
                     self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_keyword)
 
         for start, length in comment_spans:

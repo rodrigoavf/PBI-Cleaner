@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtGui import (
     QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence
 )
-from DAX.qcode_editor import QCodeEditor
+from Coding.code_editor import CodeEditor
 from common_functions import code_editor_font
 
 
@@ -94,7 +94,7 @@ class DAXQueryTab(QWidget):
 
         # Query editor
         right_layout.addWidget(QLabel("DAX Query Code"))
-        self.query_editor = QCodeEditor(language='dax')
+        self.query_editor = CodeEditor(language='dax')
         self.query_editor.setFont(code_editor_font())
         self.query_editor.setEnabled(False)
         try:

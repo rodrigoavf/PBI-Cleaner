@@ -3,13 +3,12 @@ from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QPlainTextEdit, QCompleter
 
 try:
-    from DAX.dax_editor_support import get_language_definition
+    from Coding.code_editor_support import get_language_definition
 except Exception:  # Fallback for environments without support module
     def get_language_definition(language):
         return None
 
-
-class QCodeEditor(QPlainTextEdit):
+class CodeEditor(QPlainTextEdit):
     """Lightweight code editor with QCompleter-based autocompletion.
 
     - Ctrl+Space triggers the popup
