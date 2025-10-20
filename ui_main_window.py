@@ -56,25 +56,6 @@ class MainWindow(QMainWindow):
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         description.setStyleSheet("font-size: 11pt; margin-bottom: 25px;")
 
-        # --- Feature list ---
-        # features_title = QLabel("Main Features")
-        # features_title.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        # features_title.setStyleSheet("font-size: 14pt; font-weight: bold; margin-top: 15px;")
-        # features_text = QLabel(
-        #     """
-        #     <ul style="font-size:12pt; line-height: 170%; color: white;">
-        #     <li><b>Search Files</b> – Find and inspect files containing specific text.</li>
-        #     <li><b>Bookmarks</b> – Reorganize, delete, or rename your bookmarks.</li>
-        #     <li><b>Measures</b> – Identify unused measures, delete, group, or rename them.</li>
-        #     <li><b>Tables</b> – Detect unused tables, delete or rename them easily.</li>
-        #     <li><b>Columns</b> – Find unused columns, clean up and rename them.</li>
-        #     </ul>
-        #     """
-        # )
-        # features_text.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        # features_text.setStyleSheet("margin-left: 60px; margin-right: 60px; color: white;")
-
-
         # --- File selector ---
         file_prompt = QLabel("Select your Power BI Project (.pbip) file to begin:")
         file_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -108,8 +89,6 @@ class MainWindow(QMainWindow):
         # --- Add widgets to layout ---
         start_layout.addWidget(logo_label)
         start_layout.addWidget(description)
-        # start_layout.addWidget(features_title)
-        # start_layout.addWidget(features_text)
         start_layout.addWidget(file_prompt)
         start_layout.addLayout(file_layout)
         start_layout.addWidget(confirm_btn, alignment=Qt.AlignmentFlag.AlignCenter)

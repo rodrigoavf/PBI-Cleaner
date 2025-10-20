@@ -19,9 +19,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QImage
 from Coding.code_editor import CodeEditor
-from common_functions import code_editor_font
+from common_functions import code_editor_font, APP_THEME
 
 
 class PowerQueryTab(QWidget):
@@ -77,7 +77,16 @@ class PowerQueryTab(QWidget):
 
         def _load_icon(name: str) -> QIcon:
             path = os.path.join(icon_dir, name)
-            return QIcon(path) if os.path.exists(path) else QIcon()
+            if not os.path.exists(path):
+                return QIcon()
+            if APP_THEME != "tentacles_light":
+                pixmap = QPixmap(path)
+                if not pixmap.isNull():
+                    image = pixmap.toImage()
+                    image.invertPixels(QImage.InvertMode.InvertRgb)
+                    pixmap = QPixmap.fromImage(image)
+                    return QIcon(pixmap)
+            return QIcon(path)
 
         self.table_icons = {
             "m": _load_icon("Table.svg"),
@@ -93,7 +102,7 @@ class PowerQueryTab(QWidget):
         self.query_label = QLabel("Query")
         right_layout.addWidget(self.query_label)
 
-        self.query_editor = CodeEditor(language="m", edit=False)
+        self.query_editor = CodeEditor(language="m")
         self.query_editor.setFont(code_editor_font())
         self.query_editor.setEnabled(False)
         try:
