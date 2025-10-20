@@ -9,6 +9,7 @@ from PyQt6.QtGui import (
     QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence
 )
 from DAX.qcode_editor import QCodeEditor
+from common_functions import code_editor_font
 
 
 INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
@@ -94,7 +95,7 @@ class DAXQueryTab(QWidget):
         # Query editor
         right_layout.addWidget(QLabel("DAX Query Code"))
         self.query_editor = QCodeEditor(language='dax')
-        self.query_editor.setFont(QFont("Consolas", 10))
+        self.query_editor.setFont(code_editor_font())
         self.query_editor.setEnabled(False)
         try:
             space_w = self.query_editor.fontMetrics().horizontalAdvance(' ')

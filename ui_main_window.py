@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
+from Tabs.tab_power_query import PowerQueryTab
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -146,7 +147,7 @@ class MainWindow(QMainWindow):
         measures_tab = QWidget()
         tables_tab = QWidget()
         columns_tab = QWidget()
-        power_query_tab = QWidget()
+        power_query_tab = PowerQueryTab(self.pbip_path)
         search_tab = FileSearchApp(self.pbip_path)
 
         # Set up placeholder content for unimplemented tabs

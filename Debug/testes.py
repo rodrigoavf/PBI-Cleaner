@@ -37,31 +37,93 @@ for filename in os.listdir(tables_tmdl):
             tmdl_data = file.read()
         
         # Extract all column names
-        column_match = r'column\s+([A-Za-z0-9_]+)'
-        columns = re.findall(column_match, tmdl_data)
-        
+        # column_match = r'column\s+([A-Za-z0-9_]+)'
+        #columns = re.findall(column_match, tmdl_data)
+        columns = re.findall(r'(?mi)^\s*column\s+([A-Za-z0-9_]+)\s*$', tmdl_data)
+
         # Extract mode (Import/DirectQuery)
-        mode_match = re.search(r'(?mi)^\s*mode:\s*([^\r\n]+)', tmdl_data)
-        mode = mode_match.group(1).strip() if mode_match else None
-        
-        # Extract queryGroup (if any)
-        query_group_match = re.search(r'(?mi)^\s*queryGroup:\s*([^\r\n]+)', tmdl_data)
-        query_group = query_group_match.group(1).strip() if query_group_match else None
-        
-        # Extract M code
-        expression_match = re.search(
-            r'(?ms)^\s*source\s*=\s*\n'           # the "source =" line
-            r'((?:[ \t].*\n)+?)'                  # the indented M code lines
-            r'\n(?=\s*annotation|\Z)',            # stop before next annotation or end-of-file
-            tmdl_data
+        # mode_match = re.search(r'(?mi)^\s*mode:\s*([^\r\n]+)', tmdl_data)
+        # mode = mode_match.group(1).strip() if mode_match else None
+        mode_match = re.search(r'(?mi)^\s*mode\s*:\s*([^\r\n]+)', tmdl_data)
+        mode = mode_match.group(1).strip() if mode_match else (
+            re.search(r'(?mi)^\s*annotation\s+PBI_DataMode\s*=\s*"?(.*?)"?\s*$', tmdl_data).group(1).strip()
+            if re.search(r'(?mi)^\s*annotation\s+PBI_DataMode', tmdl_data) else None
         )
-        m_query = expression_match.group(1) if expression_match else None
+        if mode and ((mode.startswith("```") and mode.endswith("```")) or (mode.startswith("`") and mode.endswith("`"))):
+            mode = mode.strip("`").strip()
+
+        # Extract queryGroup (if any)
+        # query_group_match = re.search(r'(?mi)^\s*queryGroup:\s*([^\r\n]+)', tmdl_data)
+        # query_group = query_group_match.group(1).strip() if query_group_match else None
+        query_group_match = re.search(r'(?mi)^\s*queryGroup\s*:\s*([^\r\n]+)', tmdl_data) \
+            or re.search(r'(?mi)^\s*queryGroup\s+([^\r\n]+)', tmdl_data)
+        query_group = query_group_match.group(1).strip() if query_group_match else None
+
+        # Extract M code
+        # expression_match = re.search(
+        #     r'(?ms)^\s*source\s*=\s*\n'       # find the start of "source ="
+        #     r'((?:[ \t]+.*\n)+?)'             # capture indented lines
+        #     r'(?=^[^\t ]|^\s*annotation|\Z)', # stop when indentation ends or next annotation
+        #     tmdl_data
+        # )
+        # m_query = expression_match.group(1) if expression_match else None
         
+        def unescape_quoted(s: str) -> str:
+            try:
+                return bytes(s, "utf-8").decode("unicode_escape")
+            except Exception:
+                return s
+
+        def extract_m_code(tmdl_text: str):
+            # A) Quoted expression form: expression = "let\n...."
+            mq = re.search(r'(?ms)^\s*expression\s*=\s*"((?:[^"\\]|\\.)*)"', tmdl_text)
+            if mq:
+                return unescape_quoted(mq.group(1)).strip()
+
+            # B) Indented block after a standalone "source =" line
+            src = re.search(r'(?m)^\s*source\s*=\s*$', tmdl_text)
+            if not src:
+                # Fallback: inline source = <content> ... up to next annotation or EOF
+                m_inline = re.search(r'(?ms)^\s*source\s*=\s*(.+?)(?=^\s*annotation\b|^\S|\Z)', tmdl_text)
+                return m_inline.group(1).rstrip() if m_inline else None
+
+            start = src.end()
+            lines = tmdl_text[start:].splitlines()
+
+            # find first non-empty line to set base indentation
+            i = 0
+            while i < len(lines) and lines[i].strip() == "":
+                i += 1
+            if i == len(lines): 
+                return None
+
+            first = lines[i]
+            base_indent = len(first) - len(first.lstrip())
+
+            out = []
+            for line in lines[i:]:
+                stripped = line.lstrip()
+                # stop if an annotation starts (even if indented)
+                if stripped.startswith("annotation "):
+                    break
+                # stop if indentation drops below the first M line
+                if stripped and (len(line) - len(stripped)) < base_indent:
+                    break
+                out.append(line)
+
+            # trim trailing blank lines
+            while out and out[-1].strip() == "":
+                out.pop()
+
+            return "\n".join(out)
+
+        m_code = extract_m_code(tmdl_data)
+
         tables_data[table_name] = {
             "columns": columns,
             "import_mode": mode,
             "query_group": query_group,
-            "m_code": m_query
+            "m_code": m_code
         }
 
 # Show the final json

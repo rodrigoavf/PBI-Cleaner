@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Sequence
+import re
 
 from PyQt6.QtCore import Qt, QEvent, QRegularExpression, QObject
 from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QTextCursor
@@ -92,6 +93,113 @@ DAX_FUNCTIONS = [
     # Query / Table output
     'DATATABLE', 'SUMMARIZE', 'SUMMARIZECOLUMNS',
     'TOPN', 'RANK', 'ROWNUMBER', 'MATCHBY', 'LOOKUPWITHTOTALS', 'FIRST', 'LAST', 'NEXT', 'PREVIOUS',
+]
+
+M_KEYWORDS = [
+    # Core syntax
+    'let', 'in', 'each', 'if', 'then', 'else', 'try', 'otherwise', 'error',
+    'and', 'or', 'not', 'is', 'as', 'meta', 'section', 'shared',
+    'true', 'false', 'null',
+
+    # Types
+    'type', 'any', 'nullable', 'function', 'table', 'list', 'record',
+    'number', 'text', 'logical', 'date', 'time', 'datetime', 'datetimezone', 'duration',
+
+    # Miscellaneous
+    'optional', 'binary', 'none', 'anynonnull', 'number', 'text', 'logical',
+    'each', 'value', 'key', 'try', 'error', 'metadata',
+]
+
+M_FUNCTIONS = [
+    # --- Table functions ---
+    'Table.AddColumn', 'Table.RemoveColumns', 'Table.SelectColumns', 'Table.SelectRows',
+    'Table.ExpandTableColumn', 'Table.ExpandRecordColumn', 'Table.Combine', 'Table.Distinct',
+    'Table.TransformColumnTypes', 'Table.NestedJoin', 'Table.Join', 'Table.FromRecords',
+    'Table.FromList', 'Table.RenameColumns', 'Table.Group', 'Table.Sort',
+    'Table.PromoteHeaders', 'Table.AddIndexColumn', 'Table.RemoveRows', 'Table.FirstN',
+    'Table.LastN', 'Table.Skip', 'Table.FillDown', 'Table.FillUp',
+    'Table.ReplaceValue', 'Table.Transpose', 'Table.Unpivot', 'Table.UnpivotOtherColumns',
+    'Table.Buffer', 'Table.Column', 'Table.ColumnCount', 'Table.ColumnNames', 'Table.RowCount',
+    'Table.SelectRowsWithErrors', 'Table.RemoveRowsWithErrors', 'Table.TransformColumns',
+    'Table.CombineColumns', 'Table.SplitColumn', 'Table.DemoteHeaders', 'Table.FromColumns',
+    'Table.FromRows', 'Table.ToRows', 'Table.ToColumns', 'Table.ToRecords', 'Table.ReorderColumns',
+    'Table.AddKey', 'Table.HasColumns', 'Table.Schema', 'Table.Partition', 'Table.ReplaceRows',
+
+    # --- List functions ---
+    'List.Transform', 'List.Accumulate', 'List.Generate', 'List.Zip',
+    'List.FirstN', 'List.Skip', 'List.Sort', 'List.Distinct',
+    'List.Sum', 'List.Average', 'List.Max', 'List.Min', 'List.RemoveNulls',
+    'List.Contains', 'List.ContainsAny', 'List.ContainsAll',
+    'List.Combine', 'List.PositionOf', 'List.PositionOfAny', 'List.FindText',
+    'List.Reverse', 'List.RemoveItems', 'List.RemoveMatchingItems',
+    'List.InsertRange', 'List.RemoveRange', 'List.ReplaceValue', 'List.Select',
+    'List.First', 'List.Last', 'List.Count', 'List.Repeat', 'List.Dates', 'List.Times',
+    'List.Numbers', 'List.Accumulate', 'List.TransformMany', 'List.Buffer', 'List.Split',
+
+    # --- Record functions ---
+    'Record.Field', 'Record.AddField', 'Record.RemoveFields', 'Record.ToTable',
+    'Record.FromList', 'Record.FromTable', 'Record.FieldNames', 'Record.FieldValues',
+    'Record.Combine', 'Record.HasFields', 'Record.SelectFields', 'Record.RenameFields',
+    'Record.RemoveFields', 'Record.ReorderFields', 'Record.TransformFields',
+
+    # --- Text functions ---
+    'Text.Upper', 'Text.Lower', 'Text.Trim', 'Text.Length', 'Text.Combine', 'Text.Split', 'Text.Replace',
+    'Text.Start', 'Text.End', 'Text.Middle', 'Text.PositionOf', 'Text.PositionOfAny', 'Text.Contains',
+    'Text.StartsWith', 'Text.EndsWith', 'Text.BeforeDelimiter', 'Text.AfterDelimiter',
+    'Text.PadStart', 'Text.PadEnd', 'Text.Remove', 'Text.RemoveRange', 'Text.ToList', 'Text.FromBinary',
+    'Text.Proper', 'Text.NewGuid', 'Text.Repeat', 'Text.BetweenDelimiters', 'Text.Format', 'Text.Select',
+    'Text.SplitAny', 'Text.CombineWithDelimiter', 'Text.From', 'Text.ToBinary',
+
+    # --- Number functions ---
+    'Number.From', 'Number.ToText', 'Number.Round', 'Number.RoundDown', 'Number.RoundUp',
+    'Number.Abs', 'Number.Power', 'Number.Mod', 'Number.Sqrt', 'Number.Log', 'Number.Exp',
+    'Number.Sign', 'Number.Random', 'Number.RandomBetween', 'Number.Max', 'Number.Min',
+    'Number.IsNaN', 'Number.IsEven', 'Number.IsOdd', 'Number.IntegerDivide',
+
+    # --- Date and Time functions ---
+    'DateTime.LocalNow', 'DateTimeZone.FixedUtcNow', 'Date.AddDays', 'Date.From',
+    'DateTime.From', 'DateTime.AddZone', 'DateTime.ToText', 'DateTime.FromText',
+    'DateTimeZone.SwitchZone', 'DateTimeZone.RemoveZone', 'DateTimeZone.ToLocal',
+    'Date.StartOfMonth', 'Date.EndOfMonth', 'Date.Day', 'Date.Month', 'Date.Year',
+    'Date.AddMonths', 'Date.AddYears', 'Date.AddQuarters', 'Date.AddWeeks',
+    'Time.From', 'Time.ToText', 'Time.FromText', 'Time.Hour', 'Time.Minute', 'Time.Second',
+
+    # --- Logical / Value functions ---
+    'Value.Is', 'Value.Type', 'Value.ReplaceType', 'Value.Metadata', 'Value.RemoveMetadata',
+    'Value.ReplaceMetadata', 'Value.As', 'Value.Equals', 'Value.Compare', 'Value.Add', 'Value.Subtract',
+    'Value.Divide', 'Value.Multiply', 'Value.NullableEquals', 'Value.NonNullEquals',
+    'Logical.FromText', 'Logical.From', 'Logical.ToText',
+
+    # --- Binary functions ---
+    'Binary.Decompress', 'Binary.Buffer', 'Binary.FromList', 'Binary.FromText', 'Binary.ToText',
+    'Binary.Compress', 'Binary.Combine', 'Binary.Format', 'Binary.Length', 'Binary.Reverse',
+    'Binary.From', 'Binary.ToList',
+
+    # --- Function helpers ---
+    'Function.From', 'Function.Invoke', 'Function.InvokeAfter', 'Function.FromText',
+    'Function.IsDataSource', 'Function.IsDeterministic',
+
+    # --- Error handling ---
+    'Error.Record', 'Error.Reason', 'Error.Message', 'Error.Detail',
+
+    # --- Type and metadata ---
+    'Type.Is', 'Type.ForRecord', 'Type.AddTableKey', 'Type.AddTablePrimaryKey', 'Type.AddMetadata',
+
+    # --- Environment / evaluation ---
+    'Expression.Evaluate', 'Expression.Identifier', 'Expression.Constant', 'Expression.TryEvaluate',
+    'Environment.Name', 'Environment.Set', 'Environment.Value',
+
+    # --- Miscellaneous ---
+    'Uri.Parts', 'Uri.BuildQueryString', 'Uri.Combine',
+    'Json.Document', 'Csv.Document', 'Xml.Document', 'Binary.Decompress',
+    'Excel.CurrentWorkbook', 'Excel.Workbook', 'File.Contents', 'Folder.Files', 'Folder.Contents',
+    'Web.Contents', 'Web.Page', 'Web.BrowserContents', 'SharePoint.Files', 'SharePoint.Tables',
+    'PowerPlatform.Dataflows', 'Odbc.DataSource', 'Sql.Database', 'MySql.Database',
+    'PostgreSQL.Database', 'Oracle.Database', 'OleDb.DataSource',
+    'AzureStorage.BlobContents', 'AzureStorage.Contents',
+    'Table.Profile', 'Table.MatchesAllRows', 'Table.MatchesAnyRows', 'Table.First',
+    'Table.Last', 'Table.Range', 'Table.AddRankColumn', 'Table.View',
+    'Record.ToList', 'Record.TransformFields', 'List.TransformMany', 'List.Accumulate',
 ]
 
 class DAXHighlighter(QSyntaxHighlighter):
@@ -205,6 +313,119 @@ class DAXHighlighter(QSyntaxHighlighter):
                 self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_keyword)
 
         # Apply comment formatting last so it overrides other spans
+        for start, length in comment_spans:
+            if length > 0:
+                self.setFormat(start, length, self.f_comment)
+
+    @staticmethod
+    def _span_overlaps(spans: list[tuple[int, int]], start: int, length: int) -> bool:
+        end = start + length
+        for span_start, span_length in spans:
+            span_end = span_start + span_length
+            if start < span_end and end > span_start:
+                return True
+        return False
+
+
+class MHighlighter(QSyntaxHighlighter):
+    """Syntax highlighter for Power Query M language."""
+
+    def __init__(self, document):
+        super().__init__(document)
+
+        self.f_keyword = QTextCharFormat()
+        self.f_keyword.setForeground(QColor('#C586C0'))
+        self.f_keyword.setFontWeight(QFont.Weight.DemiBold)
+
+        self.f_function = QTextCharFormat()
+        self.f_function.setForeground(QColor('#4FC1FF'))
+
+        self.f_string = QTextCharFormat()
+        self.f_string.setForeground(QColor('#CE9178'))
+
+        self.f_number = QTextCharFormat()
+        self.f_number.setForeground(QColor('#B5CEA8'))
+
+        self.f_comment = QTextCharFormat()
+        self.f_comment.setForeground(QColor('#6A9955'))
+
+        if M_KEYWORDS:
+            kw_pattern = r"(?i)\b(" + "|".join(re.escape(word) for word in M_KEYWORDS) + r")\b"
+            self.re_keyword = QRegularExpression(kw_pattern)
+        else:
+            self.re_keyword = None
+
+        if M_FUNCTIONS:
+            fn_pattern = r"(?i)\b(" + "|".join(re.escape(name) for name in M_FUNCTIONS) + r")\b(?=\s*\()"
+            self.re_function = QRegularExpression(fn_pattern)
+        else:
+            self.re_function = None
+
+        self.re_string = QRegularExpression(r'"[^"\\]*(?:\\.[^"\\]*)*"')
+        self.re_number = QRegularExpression(r"\b[0-9]+(\.[0-9]+)?\b")
+        self.re_line_comment = QRegularExpression(r"//.*$")
+        self.re_comment_start = QRegularExpression(r"/\*")
+        self.re_comment_end = QRegularExpression(r"\*/")
+
+    def highlightBlock(self, text: str) -> None:
+        self.setCurrentBlockState(0)
+
+        comment_spans: list[tuple[int, int]] = []
+
+        if self.previousBlockState() != 1:
+            match = self.re_comment_start.match(text)
+            start_index = match.capturedStart() if match.hasMatch() else -1
+        else:
+            start_index = 0
+
+        while start_index >= 0:
+            end_match = self.re_comment_end.match(text, start_index)
+            end_index = end_match.capturedEnd() if end_match.hasMatch() else -1
+            if end_index == -1:
+                self.setCurrentBlockState(1)
+                length = len(text) - start_index
+                comment_spans.append((start_index, length))
+                break
+            else:
+                length = end_index - start_index
+                comment_spans.append((start_index, length))
+                next_match = self.re_comment_start.match(text, end_index)
+                start_index = next_match.capturedStart() if next_match.hasMatch() else -1
+
+        if self.previousBlockState() == 1 and self.currentBlockState() != 1:
+            self.setCurrentBlockState(0)
+
+        it = self.re_line_comment.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            comment_spans.append((m.capturedStart(), m.capturedLength()))
+
+        it = self.re_string.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
+                self.setFormat(m.capturedStart(), m.capturedLength(), self.f_string)
+
+        it = self.re_number.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            if not self._span_overlaps(comment_spans, m.capturedStart(), m.capturedLength()):
+                self.setFormat(m.capturedStart(), m.capturedLength(), self.f_number)
+
+        if self.re_function:
+            it = self.re_function.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                if not self._span_overlaps(comment_spans, m.capturedStart(1), m.capturedLength(1)):
+                    self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_function)
+
+        if self.re_keyword:
+            it = self.re_keyword.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                if not self._span_overlaps(comment_spans, m.capturedStart(1), m.capturedLength(1)):
+                    self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_keyword)
+
         for start, length in comment_spans:
             if length > 0:
                 self.setFormat(start, length, self.f_comment)
@@ -360,6 +581,13 @@ _LANGUAGE_DEFINITIONS: dict[str, LanguageDefinition] = {
         keywords=DAX_KEYWORDS,
         functions=DAX_FUNCTIONS,
         highlighter_cls=DAXHighlighter,
+        line_comment='//',
+    ),
+    'm': LanguageDefinition(
+        name='m',
+        keywords=M_KEYWORDS,
+        functions=M_FUNCTIONS,
+        highlighter_cls=MHighlighter,
         line_comment='//',
     ),
 }
