@@ -16,7 +16,14 @@ class CodeEditor(QPlainTextEdit):
     - Popup hides on Enter/Tab/Escape and non-word characters
     """
 
-    def __init__(self, parent=None, language: str | None = None):
+    def __init__(self, parent=None, language: str | None = None, edit: bool = True):
+        """Create a CodeEditor.
+
+        Parameters:
+            parent: optional parent widget
+            language: optional language id for syntax support
+            edit: if False the editor will be created read-only (default True)
+        """
         super().__init__(parent)
         self._completer: QCompleter | None = None
         self._completer_model: QStringListModel | None = None
@@ -25,6 +32,13 @@ class CodeEditor(QPlainTextEdit):
         self._language: str | None = None
         self._line_comment: str | None = None
         self._ctrl_k_sequence: bool = False
+        # editable flag controls whether the user can change the text
+        self._editable: bool = bool(edit)
+        # QPlainTextEdit uses setReadOnly(True) to make the widget non-editable
+        try:
+            self.setReadOnly(not self._editable)
+        except Exception:
+            pass
 
         if language:
             self.set_language(language)
@@ -191,6 +205,9 @@ class CodeEditor(QPlainTextEdit):
         super().focusOutEvent(e)
 
     def keyPressEvent(self, e):
+        if self._editable is False:
+            return
+        
         key = e.key()
         mods = e.modifiers()
 

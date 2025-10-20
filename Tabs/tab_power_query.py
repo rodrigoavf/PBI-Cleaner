@@ -93,7 +93,7 @@ class PowerQueryTab(QWidget):
         self.query_label = QLabel("Query")
         right_layout.addWidget(self.query_label)
 
-        self.query_editor = CodeEditor(language="m")
+        self.query_editor = CodeEditor(language="m", edit=False)
         self.query_editor.setFont(code_editor_font())
         self.query_editor.setEnabled(False)
         try:
@@ -113,7 +113,7 @@ class PowerQueryTab(QWidget):
         self.import_mode_combo.addItem("Import", "import")
         self.import_mode_combo.addItem("DirectQuery", "directquery")
         self.import_mode_combo.currentIndexChanged.connect(self.on_import_mode_changed)
-        form_layout.addRow("Import mode", self.import_mode_combo)
+        form_layout.addRow("Data load mode", self.import_mode_combo)
 
         right_layout.addLayout(form_layout)
 
