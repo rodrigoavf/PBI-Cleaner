@@ -296,51 +296,87 @@ class QCodeEditor(QPlainTextEdit):
         if not start_block.isValid() or not end_block.isValid():
             return False
 
-        start_pos = start_block.position()
+        start_idx = start_block.blockNumber()
+        end_idx = end_block.blockNumber()
+
+        lines, offsets = self._iter_document_lines()
+        if not lines:
+            return False
 
         if direction < 0:
-            previous_block = start_block.previous()
-            if not previous_block.isValid():
+            if start_idx == 0:
                 return False
+            neighbor_idx = start_idx - 1
+            segment = [line for line in lines[start_idx:end_idx + 1]]
+            neighbor_line_orig = lines[neighbor_idx]
+            original_slice = list(lines[neighbor_idx:end_idx + 1])
 
-            selection_end = end_block.position() + end_block.length()
-            selected_text = self._get_plain_text(start_pos, selection_end)
-            selected_length = len(selected_text)
+            selection_last_had_newline = segment[-1].endswith("\n")
+            if not selection_last_had_newline:
+                segment[-1] = segment[-1] + "\n"
 
-            combined_start = previous_block.position()
-            combined_end = selection_end
-            preceding_text = self._get_plain_text(combined_start, start_pos)
-            new_text = selected_text + preceding_text
+            neighbor_line = neighbor_line_orig.rstrip("\n")
+            neighbor_suffix = "\n" if selection_last_had_newline else ""
+            neighbor_line = neighbor_line + neighbor_suffix
+
+            replacement_lines = segment + [neighbor_line]
+            combined_start = offsets[neighbor_idx]
             new_selection_start = combined_start
         else:
-            next_block = end_block.next()
-            if not next_block.isValid():
+            neighbor_idx = end_idx + 1
+            if neighbor_idx >= len(lines):
                 return False
-            if not next_block.next().isValid() and not next_block.text() and next_block.length() <= 1:
+            neighbor_line_orig = lines[neighbor_idx]
+            if len(neighbor_line_orig) == 0 and neighbor_idx == len(lines) - 1:
                 return False
+            segment = [line for line in lines[start_idx:end_idx + 1]]
+            original_slice = list(lines[start_idx:neighbor_idx + 1])
 
-            selection_end = next_block.position()
-            selected_text = self._get_plain_text(start_pos, selection_end)
-            selected_length = len(selected_text)
+            neighbor_line = neighbor_line_orig.rstrip("\n") + "\n"
+            neighbor_had_newline = neighbor_line_orig.endswith("\n")
+            last_segment = segment[-1].rstrip("\n")
+            segment[-1] = last_segment + ("\n" if neighbor_had_newline else "")
 
-            combined_start = start_pos
-            combined_end = next_block.position() + next_block.length()
-            following_text = self._get_plain_text(selection_end, combined_end)
-            new_text = following_text + selected_text
-            new_selection_start = combined_start + len(following_text)
+            replacement_lines = [neighbor_line] + segment
+            combined_start = offsets[start_idx]
+            new_selection_start = combined_start + len(neighbor_line)
+
+        replacement_text = "".join(replacement_lines)
+        original_text = "".join(original_slice)
+        if not original_text or replacement_text == original_text:
+            return False
+
+        combined_end = combined_start + len(original_text)
 
         edit_cursor = QTextCursor(doc)
         edit_cursor.setPosition(combined_start)
         edit_cursor.setPosition(combined_end, QTextCursor.MoveMode.KeepAnchor)
         edit_cursor.beginEditBlock()
-        edit_cursor.insertText(new_text)
+        edit_cursor.insertText(replacement_text)
         edit_cursor.endEditBlock()
 
+        selection_length = sum(len(line) for line in segment)
         new_cursor = self.textCursor()
         new_cursor.setPosition(new_selection_start)
-        new_cursor.setPosition(new_selection_start + selected_length, QTextCursor.MoveMode.KeepAnchor)
+        new_cursor.setPosition(new_selection_start + selection_length, QTextCursor.MoveMode.KeepAnchor)
         self.setTextCursor(new_cursor)
         return True
+
+    def _iter_document_lines(self) -> tuple[list[str], list[int]]:
+        doc = self.document()
+        lines: list[str] = []
+        offsets: list[int] = [0]
+        total = 0
+        block = doc.begin()
+        while block.isValid():
+            text = block.text()
+            if block.next().isValid():
+                text = text + "\n"
+            lines.append(text)
+            total += len(text)
+            offsets.append(total)
+            block = block.next()
+        return lines, offsets
 
     def _comment_selection(self) -> bool:
         token = self._line_comment
