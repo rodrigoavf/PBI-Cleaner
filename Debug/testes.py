@@ -34,48 +34,34 @@ for filename in os.listdir(tables_tmdl):
         table_name = os.path.splitext(filename)[0]
         table_path = os.path.join(tables_tmdl, filename)
         with open(table_path, 'r', encoding='utf-8') as file:
-            table_data = file.read()
+            tmdl_data = file.read()
         
-        # Extract columns
-        # The pattern is Column ColumnName (Might be with quotes, and may be followed a space followed by a = sign)
-        # Example: column DESCRIPTION_PROG
-        # Example 2: column DESCRIPTION_PROG =
-        column_pattern = r"column\s+['\"]?(\w+)['\"]?\s*(?:=|$)"
-        columns = re.findall(column_pattern, table_data)
+        # Extract all column names
+        column_match = r'column\s+([A-Za-z0-9_]+)'
+        columns = re.findall(column_match, tmdl_data)
         
-        # Extract import mode
-        # The pattern in mode: importMode
-        # Exmaple: mode: import
-        import_mode_pattern = r"mode:\s+(\w+)"
-        import_mode_match = re.search(import_mode_pattern, model_tmdl_data)
-        import_mode = import_mode_match.group(1) if import_mode_match else "Unknown"
+        # Extract mode (Import/DirectQuery)
+        mode_match = re.search(r'(?mi)^\s*mode:\s*([^\r\n]+)', tmdl_data)
+        mode = mode_match.group(1).strip() if mode_match else None
         
-        # Extract query group
-        # The pattern is queryGroup: queryGroupName
-        # Example: queryGroup: Sales
-        query_group_pattern = r"queryGroup:\s+(\w+)"
-        query_group_match = re.search(query_group_pattern, table_data)
-        query_group = query_group_match.group(1) if query_group_match else "Default"
+        # Extract queryGroup (if any)
+        query_group_match = re.search(r'(?mi)^\s*queryGroup:\s*([^\r\n]+)', tmdl_data)
+        query_group = query_group_match.group(1).strip() if query_group_match else None
         
         # Extract M code
-        # The pattern is source = (the code can be multiline until a line before an empty line or the end of the file)
-        # Exemple:  
-            # source =
-                # let
-                #     Origem = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i44FAA==", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Coluna1 = _t]),
-                #     #"Tipo Alterado" = Table.TransformColumnTypes(Origem,{{"Coluna1", type text}}),
-                #     #"Removed Columns" = Table.RemoveColumns(#"Tipo Alterado",{"Coluna1"})
-                # in
-                #     #"Removed Columns"
-        m_code_pattern = r"source\s*=\s*(let\s.*?)(?:\n\s*\n|$)"
-        m_code_match = re.search(m_code_pattern, table_data, re.DOTALL)
-        m_code = m_code_match.group(1).strip() if m_code_match else ""
+        expression_match = re.search(
+            r'(?ms)^\s*source\s*=\s*\n'           # the "source =" line
+            r'((?:[ \t].*\n)+?)'                  # the indented M code lines
+            r'\n(?=\s*annotation|\Z)',            # stop before next annotation or end-of-file
+            tmdl_data
+        )
+        m_query = expression_match.group(1) if expression_match else None
         
         tables_data[table_name] = {
             "columns": columns,
-            "import_mode": import_mode,
+            "import_mode": mode,
             "query_group": query_group,
-            "m_code": m_code
+            "m_code": m_query
         }
 
 # Show the final json

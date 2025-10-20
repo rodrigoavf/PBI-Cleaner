@@ -45,6 +45,10 @@ class DAXQueryTab(QWidget):
         self.refresh_button.setToolTip("Reload queries from disk (undo unsaved changes)")
         self.refresh_button.clicked.connect(self.refresh_queries)
         top_bar.addWidget(self.refresh_button)
+        self.sort_button = QPushButton("↑↓ Sort A-Z")
+        self.sort_button.setToolTip("Sort queries alphabetically (A-Z)")
+        self.sort_button.clicked.connect(self.sort_queries_alphabetically)
+        top_bar.addWidget(self.sort_button)
         top_bar.addStretch()
         main_layout.addLayout(top_bar)
 
@@ -113,7 +117,7 @@ class DAXQueryTab(QWidget):
         right_layout.addWidget(hotkey_hint_right)
 
         # Hotkey hints - left
-        hotkey_hint_left = QLabel("F2: Rename\nDelete: Delete selected\nCtrl+N: New query\nAlt+Up: Move up\nAlt+Down: Move down")
+        hotkey_hint_left = QLabel("F2: Rename Selected\nDelete: Delete selected\nCtrl+N: New query\nAlt+Up: Move up\nAlt+Down: Move down")
         hotkey_hint_left.setStyleSheet("color: #666666; font-size: 10px;")
         hotkey_hint_left.setWordWrap(True)
         left_layout.addWidget(hotkey_hint_left)
@@ -490,6 +494,51 @@ class DAXQueryTab(QWidget):
 
         self.save_button.setEnabled(True)
 
+    def sort_queries_alphabetically(self):
+        """Sort queries alphabetically by name while preserving selection."""
+        if self.query_list.count() < 2:
+            return
+
+        selected_names = {self.get_item_name(item) for item in self.query_list.selectedItems()}
+        current_item = self.query_list.currentItem()
+        current_name = self.get_item_name(current_item) if current_item else None
+
+        items = []
+        while self.query_list.count():
+            items.append(self.query_list.takeItem(0))
+
+        items.sort(key=lambda item: self.get_item_name(item).casefold())
+
+        previous_ignore_state = self.ignore_item_changes
+        self.ignore_item_changes = True
+        for item in items:
+            self.query_list.addItem(item)
+        self.ignore_item_changes = previous_ignore_state
+
+        sorted_names = [self.get_item_name(self.query_list.item(i)) for i in range(self.query_list.count())]
+        existing_queries = dict(self.queries)
+        self.queries = {name: existing_queries.get(name, "") for name in sorted_names}
+
+        self.query_list.blockSignals(True)
+        self.query_list.clearSelection()
+        restored_current_item = None
+        for i in range(self.query_list.count()):
+            item = self.query_list.item(i)
+            name = self.get_item_name(item)
+            if name in selected_names:
+                item.setSelected(True)
+            if name == current_name:
+                restored_current_item = item
+        if restored_current_item is not None:
+            self.query_list.setCurrentItem(restored_current_item)
+        elif self.query_list.count() > 0:
+            self.query_list.setCurrentRow(0)
+        self.query_list.blockSignals(False)
+
+        self.refresh_item_displays()
+        self.on_selection_changed()
+        self.save_button.setEnabled(True)
+
     def ensure_default_query(self):
         """Ensure there is a valid default query after deletions."""
         if self.query_list.count() == 0:
@@ -526,7 +575,6 @@ class DAXQueryTab(QWidget):
 
         self.default_query = query_name
         self.refresh_item_displays()
-        self.default_btn.setEnabled(False)
         self.save_button.setEnabled(True)
 
     def save_changes(self):
