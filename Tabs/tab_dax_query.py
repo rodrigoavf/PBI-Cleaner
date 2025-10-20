@@ -148,11 +148,11 @@ class DAXQueryTab(QWidget):
         self.new_query_shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
         self.new_query_shortcut.activated.connect(self.add_new_query)
 
-        self.move_up_shortcut = QShortcut(QKeySequence("Alt+Up"), self.query_list)
-        self.move_up_shortcut.activated.connect(lambda: self.move_selected_queries(-1))
+        # self.move_up_shortcut = QShortcut(QKeySequence("Alt+Up"), self.query_list)
+        # self.move_up_shortcut.activated.connect(lambda: self.move_selected_queries(-1))
 
-        self.move_down_shortcut = QShortcut(QKeySequence("Alt+Down"), self.query_list)
-        self.move_down_shortcut.activated.connect(lambda: self.move_selected_queries(1))
+        # self.move_down_shortcut = QShortcut(QKeySequence("Alt+Down"), self.query_list)
+        # self.move_down_shortcut.activated.connect(lambda: self.move_selected_queries(1))
 
     def refresh_queries(self):
         """Reload queries from disk, discarding unsaved changes."""

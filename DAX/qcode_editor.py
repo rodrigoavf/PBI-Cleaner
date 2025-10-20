@@ -297,30 +297,37 @@ class QCodeEditor(QPlainTextEdit):
             return False
 
         start_pos = start_block.position()
-        end_pos = end_block.position() + end_block.length()
 
         if direction < 0:
-            target_block = start_block.previous()
-            if not target_block.isValid():
+            previous_block = start_block.previous()
+            if not previous_block.isValid():
                 return False
-            target_start = target_block.position()
-            combined_start = target_start
-            combined_end = end_pos
-            selected_text = self._get_plain_text(start_pos, end_pos)
-            target_text = self._get_plain_text(target_start, start_pos)
-            new_text = selected_text + target_text
-            new_start = combined_start
+
+            selection_end = end_block.position() + end_block.length()
+            selected_text = self._get_plain_text(start_pos, selection_end)
+            selected_length = len(selected_text)
+
+            combined_start = previous_block.position()
+            combined_end = selection_end
+            preceding_text = self._get_plain_text(combined_start, start_pos)
+            new_text = selected_text + preceding_text
+            new_selection_start = combined_start
         else:
-            target_block = end_block.next()
-            if not target_block.isValid():
+            next_block = end_block.next()
+            if not next_block.isValid():
                 return False
-            target_end = target_block.position() + target_block.length()
+            if not next_block.next().isValid() and not next_block.text() and next_block.length() <= 1:
+                return False
+
+            selection_end = next_block.position()
+            selected_text = self._get_plain_text(start_pos, selection_end)
+            selected_length = len(selected_text)
+
             combined_start = start_pos
-            combined_end = target_end
-            selected_text = self._get_plain_text(start_pos, end_pos)
-            target_text = self._get_plain_text(end_pos, target_end)
-            new_text = target_text + selected_text
-            new_start = combined_start + len(target_text)
+            combined_end = next_block.position() + next_block.length()
+            following_text = self._get_plain_text(selection_end, combined_end)
+            new_text = following_text + selected_text
+            new_selection_start = combined_start + len(following_text)
 
         edit_cursor = QTextCursor(doc)
         edit_cursor.setPosition(combined_start)
@@ -330,8 +337,8 @@ class QCodeEditor(QPlainTextEdit):
         edit_cursor.endEditBlock()
 
         new_cursor = self.textCursor()
-        new_cursor.setPosition(new_start)
-        new_cursor.setPosition(new_start + len(selected_text), QTextCursor.MoveMode.KeepAnchor)
+        new_cursor.setPosition(new_selection_start)
+        new_cursor.setPosition(new_selection_start + selected_length, QTextCursor.MoveMode.KeepAnchor)
         self.setTextCursor(new_cursor)
         return True
 

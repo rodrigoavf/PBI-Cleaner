@@ -1,23 +1,34 @@
 import os
+import sys
+import subprocess
+import webbrowser
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QTabWidget, QVBoxLayout, QLabel, QPushButton,
-    QHBoxLayout, QFileDialog, QLineEdit, QMessageBox
+    QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QLabel, QPushButton,
+    QHBoxLayout, QFileDialog, QLineEdit, QMessageBox, QStyleFactory
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QAction, QActionGroup
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
 from Tabs.tab_power_query import PowerQueryTab
+from common_functions import apply_theme, THEME_PRESETS
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.current_theme = apply_theme(QApplication.instance())
         self.setWindowTitle("Tentacles")
         self.setMinimumSize(1000, 500)
 
         self.pbip_path = None
+        self.theme_actions: dict[str, QAction] = {}
+        self.theme_action_group: QActionGroup | None = None
+        self.reload_project_action: QAction | None = None
+        self.open_project_folder_action: QAction | None = None
 
         self.init_ui()
+        self.setup_menu()
+        self.refresh_menu_state()
 
     def init_ui(self):
         # --- Starting screen for PBIP selection ---
@@ -33,6 +44,7 @@ class MainWindow(QMainWindow):
         logo = logo.scaledToHeight(target_height, Qt.TransformationMode.SmoothTransformation)
         logo_label.setPixmap(logo)
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_label.setMinimumHeight(target_height + 20)
 
         # --- Description area ---
         description = QLabel(
@@ -45,23 +57,22 @@ class MainWindow(QMainWindow):
         description.setStyleSheet("font-size: 11pt; margin-bottom: 25px;")
 
         # --- Feature list ---
-        features_title = QLabel("Main Features")
-        features_title.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        features_title.setStyleSheet("font-size: 14pt; font-weight: bold; margin-top: 15px;")
-
-        features_text = QLabel(
-            """
-            <ul style="font-size:12pt; line-height: 170%; color: white;">
-            <li><b>Search Files</b> – Find and inspect files containing specific text.</li>
-            <li><b>Bookmarks</b> – Reorganize, delete, or rename your bookmarks.</li>
-            <li><b>Measures</b> – Identify unused measures, delete, group, or rename them.</li>
-            <li><b>Tables</b> – Detect unused tables, delete or rename them easily.</li>
-            <li><b>Columns</b> – Find unused columns, clean up and rename them.</li>
-            </ul>
-            """
-        )
-        features_text.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        features_text.setStyleSheet("margin-left: 60px; margin-right: 60px; color: white;")
+        # features_title = QLabel("Main Features")
+        # features_title.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        # features_title.setStyleSheet("font-size: 14pt; font-weight: bold; margin-top: 15px;")
+        # features_text = QLabel(
+        #     """
+        #     <ul style="font-size:12pt; line-height: 170%; color: white;">
+        #     <li><b>Search Files</b> – Find and inspect files containing specific text.</li>
+        #     <li><b>Bookmarks</b> – Reorganize, delete, or rename your bookmarks.</li>
+        #     <li><b>Measures</b> – Identify unused measures, delete, group, or rename them.</li>
+        #     <li><b>Tables</b> – Detect unused tables, delete or rename them easily.</li>
+        #     <li><b>Columns</b> – Find unused columns, clean up and rename them.</li>
+        #     </ul>
+        #     """
+        # )
+        # features_text.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        # features_text.setStyleSheet("margin-left: 60px; margin-right: 60px; color: white;")
 
 
         # --- File selector ---
@@ -97,8 +108,8 @@ class MainWindow(QMainWindow):
         # --- Add widgets to layout ---
         start_layout.addWidget(logo_label)
         start_layout.addWidget(description)
-        start_layout.addWidget(features_title)
-        start_layout.addWidget(features_text)
+        # start_layout.addWidget(features_title)
+        # start_layout.addWidget(features_text)
         start_layout.addWidget(file_prompt)
         start_layout.addLayout(file_layout)
         start_layout.addWidget(confirm_btn, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -109,9 +120,184 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(start_widget)
         self.setup_shortcuts()
 
+    def setup_menu(self):
+        """Create the application menu bar."""
+        menu_bar = self.menuBar()
+        menu_bar.clear()
+
+        # --- File menu ---
+        file_menu = menu_bar.addMenu("&File")
+
+        new_project_action = QAction("New Project", self)
+        new_project_action.setShortcut("Ctrl+N")
+        new_project_action.triggered.connect(self.change_file)
+        file_menu.addAction(new_project_action)
+
+        open_action = QAction("Open PBIP...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_pbip_via_menu)
+        file_menu.addAction(open_action)
+
+        self.reload_project_action = QAction("Reload Project", self)
+        self.reload_project_action.setShortcut("Ctrl+R")
+        self.reload_project_action.triggered.connect(self.reload_current_project)
+        file_menu.addAction(self.reload_project_action)
+
+        self.open_project_folder_action = QAction("Open Project Folder", self)
+        self.open_project_folder_action.setShortcut("Ctrl+Shift+O")
+        self.open_project_folder_action.triggered.connect(self.open_project_folder)
+        file_menu.addAction(self.open_project_folder_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # --- Settings menu ---
+        settings_menu = menu_bar.addMenu("&Settings")
+
+        theme_menu = settings_menu.addMenu("Theme")
+        self.theme_actions = {}
+        self.theme_action_group = QActionGroup(self)
+        self.theme_action_group.setExclusive(True)
+
+        available_styles = {name.lower() for name in QStyleFactory.keys()}
+
+        for key, label in THEME_PRESETS.items():
+            if key not in {"default"}:
+                if key.startswith("fusion"):
+                    if "fusion" not in available_styles:
+                        continue
+                elif key == "windowsvista":
+                    if "windowsvista" not in available_styles:
+                        continue
+                elif key == "windows":
+                    if "windows" not in available_styles and "windowsvista" not in available_styles:
+                        continue
+                elif key == "macintosh":
+                    if "macintosh" not in available_styles:
+                        continue
+
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked, k=key: self.change_theme(k) if checked else None)
+            self.theme_action_group.addAction(action)
+            theme_menu.addAction(action)
+            self.theme_actions[key] = action
+
+        settings_menu.addSeparator()
+
+        reset_size_action = QAction("Reset Window Size", self)
+        reset_size_action.triggered.connect(self.reset_window_size)
+        settings_menu.addAction(reset_size_action)
+
+        # --- About menu ---
+        about_menu = menu_bar.addMenu("&About")
+        about_action = QAction("About Tentacles", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        about_menu.addAction(about_action)
+
+        author_action = QAction("Visit Author Profile", self)
+        author_action.triggered.connect(self.visit_author_profile)
+        about_menu.addAction(author_action)
+
+        self.update_theme_checks()
+
     def setup_shortcuts(self):
         """Register keyboard shortcuts for main window actions."""
         self.file_input.returnPressed.connect(self.load_main_tabs)
+
+    def refresh_menu_state(self):
+        """Enable or disable menu actions based on current state."""
+        if self.reload_project_action is None or self.open_project_folder_action is None:
+            return
+
+        has_project = bool(self.pbip_path)
+        self.reload_project_action.setEnabled(has_project)
+        self.open_project_folder_action.setEnabled(has_project)
+        self.update_theme_checks()
+
+    def update_theme_checks(self):
+        """Reflect the active theme in the Settings menu."""
+        if not self.theme_actions:
+            return
+        target = (self.current_theme or "").lower()
+        matched = False
+        for key, action in self.theme_actions.items():
+            should_check = key.lower() == target
+            action.blockSignals(True)
+            action.setChecked(should_check)
+            action.blockSignals(False)
+            if should_check:
+                matched = True
+        if not matched:
+            default_action = self.theme_actions.get("fusion_light") or self.theme_actions.get("default")
+            if default_action:
+                default_action.blockSignals(True)
+                default_action.setChecked(True)
+                default_action.blockSignals(False)
+
+    def open_pbip_via_menu(self):
+        """Open a PBIP file using the File > Open menu."""
+        previous_path = self.pbip_path
+        self.select_pbip_file()
+        if self.pbip_path and self.pbip_path != previous_path:
+            self.load_main_tabs()
+
+    def reload_current_project(self):
+        """Reload the active PBIP project."""
+        if not self.pbip_path:
+            QMessageBox.information(self, "No Project", "Select a .pbip file first.")
+            return
+        self.load_main_tabs()
+
+    def open_project_folder(self):
+        """Open the directory that contains the current project file."""
+        if not self.pbip_path:
+            QMessageBox.information(self, "No Project", "Select a .pbip file first.")
+            return
+
+        folder = os.path.dirname(self.pbip_path)
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.warning(self, "Folder Missing", "Could not locate the project folder on disk.")
+            return
+
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(folder)
+            elif sys.platform == "darwin":
+                subprocess.check_call(["open", folder])
+            else:
+                subprocess.check_call(["xdg-open", folder])
+        except Exception as exc:
+            QMessageBox.warning(self, "Open Folder Failed", f"Unable to open the project folder:\n{exc}")
+
+    def reset_window_size(self):
+        """Restore the window to its default size."""
+        self.resize(1000, 500)
+
+    def change_theme(self, theme_key: str):
+        """Apply a theme selection from the Settings menu."""
+        resolved = apply_theme(QApplication.instance(), theme_key)
+        self.current_theme = resolved
+        self.update_theme_checks()
+
+    def show_about_dialog(self):
+        """Display application and author information."""
+        about_text = (
+            "<b>Tentacles</b><br>"
+            "A companion tool to explore, clean, and organise Power BI project assets.<br><br>"
+            "Developed by Rodrigo Ferreira to streamline working with PBIP files, "
+            "offering quick search, query editing, and model insights.<br><br>"
+            "Powered by PyQt6 and open-source contributions."
+        )
+        QMessageBox.about(self, "About Tentacles", about_text)
+
+    def visit_author_profile(self):
+        """Open the author's public profile in the default browser."""
+        webbrowser.open("https://www.linkedin.com/in/rodrigoavf/")
 
     def select_pbip_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -130,6 +316,7 @@ class MainWindow(QMainWindow):
 
         self.pbip_path = file_path
         self.file_input.setText(file_path)
+        self.refresh_menu_state()
 
     def load_main_tabs(self):
         # If pbip_path wasn't set via Browse, try to use whatever is in the text field.
@@ -199,7 +386,9 @@ class MainWindow(QMainWindow):
 
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
+        self.refresh_menu_state()
 
     def change_file(self):
         self.pbip_path = None
         self.init_ui()
+        self.refresh_menu_state()
