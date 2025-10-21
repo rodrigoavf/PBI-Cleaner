@@ -18,7 +18,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.current_theme = apply_theme(QApplication.instance())
         self.setWindowTitle("Tentacles")
-        self.setMinimumSize(1000, 500)
+        self.setMinimumSize(800, 300)
 
         self.pbip_path = None
         self.theme_actions: dict[str, QAction] = {}
@@ -108,7 +108,7 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("&File")
 
         new_project_action = QAction("New Project", self)
-        new_project_action.setShortcut("Ctrl+N")
+        # new_project_action.setShortcut("Ctrl+N")
         new_project_action.triggered.connect(self.change_file)
         file_menu.addAction(new_project_action)
 
@@ -294,6 +294,7 @@ class MainWindow(QMainWindow):
             return
 
         self.pbip_path = file_path
+        self.setWindowTitle(f"Tentacles{" - " + os.path.basename(self.pbip_path) if self.pbip_path else ""}")
         self.file_input.setText(file_path)
         self.refresh_menu_state()
 
@@ -303,6 +304,7 @@ class MainWindow(QMainWindow):
             candidate = (self.file_input.text() or "").strip()
             if candidate and candidate.lower().endswith('.pbip') and os.path.isfile(candidate):
                 self.pbip_path = candidate
+                self.setWindowTitle(f"Tentacles{" - " + os.path.basename(self.pbip_path) if self.pbip_path else ""}")
             else:
                 QMessageBox.warning(self, "Missing File", "Please select a .pbip file first.")
                 return

@@ -59,7 +59,7 @@ class DAXQueryTab(QWidget):
         # Left side - Query list
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 6, 0)
+        left_layout.setContentsMargins(0, 0, 3, 0)
 
         # Query list with drag-drop support
         self.query_list = QListWidget()
@@ -90,7 +90,7 @@ class DAXQueryTab(QWidget):
         # Right side - Query editor
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(6, 0, 0, 0)
+        right_layout.setContentsMargins(3, 0, 0, 0)
 
         # Query editor
         right_layout.addWidget(QLabel("DAX Query Code"))
@@ -424,6 +424,7 @@ class DAXQueryTab(QWidget):
 
         self.save_button.setEnabled(True)
         self.on_selection_changed()
+        self.query_list.setFocus()
 
     def delete_selected_queries(self):
         """Delete selected queries after confirmation."""

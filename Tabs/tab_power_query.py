@@ -81,7 +81,7 @@ class PowerQueryTab(QWidget):
 
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 6, 0)
+        left_layout.setContentsMargins(0, 0, 3, 0)
 
         left_layout.addWidget(QLabel("Tables"))
 
@@ -128,7 +128,7 @@ class PowerQueryTab(QWidget):
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(6, 0, 0, 0)
+        right_layout.setContentsMargins(3, 0, 0, 0)
 
         self.query_label = QLabel("Query")
         right_layout.addWidget(self.query_label)
