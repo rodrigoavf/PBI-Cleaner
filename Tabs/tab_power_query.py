@@ -20,7 +20,9 @@ from PyQt6.QtWidgets import (
     QWidget,
     QMenu,
 )
-from PyQt6.QtGui import QFont, QIcon, QPixmap, QImage
+from PyQt6.QtGui import (
+    QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence, QIcon, QPixmap, QImage
+)
 from Coding.code_editor import CodeEditor
 from common_functions import code_editor_font, APP_THEME
 
@@ -87,7 +89,7 @@ class PowerQueryTab(QWidget):
 
         self.table_tree = QTreeWidget()
         self.table_tree.setHeaderHidden(True)
-        self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self.table_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         left_layout.addWidget(self.table_tree)
         self.table_tree.setDragEnabled(True)
@@ -148,6 +150,18 @@ class PowerQueryTab(QWidget):
         form_layout.setContentsMargins(0, 8, 0, 0)
         form_layout.setSpacing(6)
 
+        # Hotkey hints - right
+        hotkey_hint_right = QLabel("Ctrl+K+C: Comment   |   Ctrl+K+U: Uncomment   |   Alt+Up: Move line up   |   Alt+Down: Move line down")
+        hotkey_hint_right.setStyleSheet("color: #666666; font-size: 10px;")
+        hotkey_hint_right.setWordWrap(True)
+        right_layout.addWidget(hotkey_hint_right)
+
+        # Hotkey hints - left
+        hotkey_hint_left = QLabel("F2: Rename\nDelete: Delete\nCtrl+N: New folder\nSpace: Set as default\nAlt+Up: Move up\nAlt+Down: Move down")
+        hotkey_hint_left.setStyleSheet("color: #666666; font-size: 10px;")
+        hotkey_hint_left.setWordWrap(True)
+        left_layout.addWidget(hotkey_hint_left)
+
         self.import_mode_combo = QComboBox()
         self.import_mode_combo.setEnabled(False)
         self.import_mode_combo.addItem("Import", "import")
@@ -161,6 +175,10 @@ class PowerQueryTab(QWidget):
         splitter.setSizes([250, 750])
 
         main_layout.addWidget(splitter)
+
+    def setup_shortcuts(self):
+        self.new_folder_shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
+        self.new_folder_shortcut.activated.connect(self.create_new_folder)
 
     def choose_pbip_file(self):
         """Prompt the user to pick a PBIP file and load it."""

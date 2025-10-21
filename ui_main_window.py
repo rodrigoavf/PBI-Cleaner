@@ -40,7 +40,7 @@ class MainWindow(QMainWindow):
         # Add logo image
         logo_label = QLabel()
         logo = QPixmap(os.path.join(os.path.dirname(__file__), "Images", "Full_Logo.png"))
-        target_height = 100
+        target_height = 150
         logo = logo.scaledToHeight(target_height, Qt.TransformationMode.SmoothTransformation)
         logo_label.setPixmap(logo)
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
