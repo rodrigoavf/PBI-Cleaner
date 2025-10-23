@@ -127,8 +127,13 @@ class FileSearchApp(QWidget):
         self.delete_button.setEnabled(False)
         self.open_button.clicked.connect(self.open_selected_folder)
         self.delete_button.clicked.connect(self.delete_selected_file)
+        # New: open file action
+        self.open_file_button = QPushButton("Open File")
+        self.open_file_button.setEnabled(False)
+        self.open_file_button.clicked.connect(self.open_selected_file)
 
         actions_layout = QHBoxLayout()
+        actions_layout.addWidget(self.open_file_button)
         actions_layout.addWidget(self.open_button)
         actions_layout.addWidget(self.delete_button)
         actions_layout.addStretch()
@@ -196,6 +201,7 @@ class FileSearchApp(QWidget):
 
         self.search_button.setEnabled(False)
         self.open_button.setEnabled(False)
+        self.open_file_button.setEnabled(False)
         self.delete_button.setEnabled(False)
         self.status.setText("🔍 Searching... please wait.")
         self.progress_bar.setVisible(True)
@@ -240,10 +246,14 @@ class FileSearchApp(QWidget):
         self.delete_button_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self.delete_button_shortcut.activated.connect(self.delete_selected_file)
 
-        # Enter in the table opens the selected folder
+        # Enter in the table opens the selected file
         self.open_button_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self.table)
         self.open_button_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self.open_button_shortcut.activated.connect(self.open_selected_folder)
+        self.open_button_shortcut.activated.connect(self.open_selected_file)
+        # Support keypad Enter as well
+        self.open_button_shortcut2 = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.table)
+        self.open_button_shortcut2.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.open_button_shortcut2.activated.connect(self.open_selected_file)
 
     def populate_table(self, hits):
         self.table.setRowCount(len(hits))
@@ -314,6 +324,7 @@ class FileSearchApp(QWidget):
 
     def update_buttons_state(self):
         has_selection = self.table.currentRow() != -1
+        self.open_file_button.setEnabled(has_selection)
         self.open_button.setEnabled(has_selection)
         self.delete_button.setEnabled(has_selection)
 
@@ -332,6 +343,21 @@ class FileSearchApp(QWidget):
                 subprocess.Popen(["xdg-open", folder])
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open folder:\n{e}")
+
+    def open_selected_file(self):
+        path = self.get_selected_file()
+        if not path:
+            return
+
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)
+            elif sys.platform.startswith("darwin"):
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open file:\n{e}")
 
     def delete_selected_file(self):
         path = self.get_selected_file()
@@ -378,6 +404,13 @@ class FileSearchApp(QWidget):
             self.table.sortItems(column, order)
 
     def eventFilter(self, source, event):
+        # Handle double-click explicitly to open file
+        if source is self.table.viewport() and event.type() == event.Type.MouseButtonDblClick:
+            index = self.table.indexAt(event.pos())
+            if index.isValid():
+                self.open_selected_file()
+                return True
+
         if source is self.table.viewport() and event.type() == event.Type.MouseButtonPress:
             index = self.table.indexAt(event.pos())
             if index.isValid():
