@@ -11,6 +11,7 @@ from PyQt6.QtGui import QPixmap, QAction, QActionGroup
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
 from Tabs.tab_power_query import PowerQueryTab
+from Tabs.tab_bookmarks import TabBookmarks
 from common_functions import apply_theme, THEME_PRESETS
 
 class MainWindow(QMainWindow):
@@ -311,7 +312,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         dax_queries_tab = DAXQueryTab(self.pbip_path)
-        bookmarks_tab = QWidget()
+        bookmarks_tab = TabBookmarks(self.pbip_path)
         measures_tab = QWidget()
         tables_tab = QWidget()
         columns_tab = QWidget()
@@ -320,7 +321,6 @@ class MainWindow(QMainWindow):
 
         # Set up placeholder content for unimplemented tabs
         for w, label in [
-            (bookmarks_tab, "Bookmarks"),
             (measures_tab, "Measures"),
             (tables_tab, "Tables"),
             (columns_tab, "Columns"),

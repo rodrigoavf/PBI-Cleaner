@@ -1,4 +1,6 @@
 import os
+import hashlib
+import re
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QPalette, QColor
 from PyQt6.QtWidgets import QStyleFactory, QApplication
@@ -201,3 +203,13 @@ def _apply_disabled_group(
     placeholder = QColor(text_color)
     placeholder.setAlpha(180)
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.PlaceholderText, placeholder)
+
+def simple_hash(value):
+    # Convert anything to string then bytes
+    s = str(value).encode("utf-8")
+    # Create SHA-256 hash
+    h = hashlib.sha256(s).hexdigest()
+    # Keep only alphanumeric chars
+    alnum = re.sub(r'[^A-Za-z0-9]', '', h)
+    # Return first 19 chars
+    return alnum[:19]

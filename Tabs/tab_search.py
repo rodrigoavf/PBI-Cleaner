@@ -128,7 +128,7 @@ class FileSearchApp(QWidget):
         self.open_button.clicked.connect(self.open_selected_folder)
         self.delete_button.clicked.connect(self.delete_selected_file)
         # New: open file action
-        self.open_file_button = QPushButton("Open File")
+        self.open_file_button = QPushButton("📄 Open File")
         self.open_file_button.setEnabled(False)
         self.open_file_button.clicked.connect(self.open_selected_file)
 

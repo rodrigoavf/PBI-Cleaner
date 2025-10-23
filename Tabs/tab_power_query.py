@@ -58,20 +58,20 @@ class PowerQueryTab(QWidget):
         main_layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
-        self.refresh_button = QPushButton("Reload Metadata")
+        self.refresh_button = QPushButton("🔄 Reload Metadata")
         self.refresh_button.setToolTip("Reload Power Query metadata from disk")
         self.refresh_button.clicked.connect(self.refresh_tables)
         top_bar.addWidget(self.refresh_button)
 
-        self.expand_button = QPushButton("Expand All")
+        self.expand_button = QPushButton("⏬ Expand All")
         self.expand_button.clicked.connect(self.expand_all_groups)
         top_bar.addWidget(self.expand_button)
 
-        self.collapse_button = QPushButton("Collapse All")
+        self.collapse_button = QPushButton("⏫ Collapse All")
         self.collapse_button.clicked.connect(self.collapse_all_groups)
         top_bar.addWidget(self.collapse_button)
 
-        self.sort_button = QPushButton("Sort A-Z")
+        self.sort_button = QPushButton("↑↓ Sort A-Z")
         self.sort_button.setToolTip("Sort folders and tables alphabetically (Other Queries stays last)")
         self.sort_button.clicked.connect(self.sort_folders_and_tables)
         top_bar.addWidget(self.sort_button)
