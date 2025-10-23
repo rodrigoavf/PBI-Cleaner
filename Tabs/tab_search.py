@@ -4,7 +4,7 @@ import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QProgressBar,
-    QSizePolicy, QScrollArea
+    QSizePolicy, QScrollArea, QCheckBox
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import (
@@ -14,7 +14,9 @@ from common_functions import count_files
 
 valid_extensions = {".json", ".tmdl"}
 
-def find_files_with_target(root_dir, target, before=20, after=20, update_callback=None):
+def find_files_with_target(root_dir, target, before=20, after=20, update_callback=None,
+                           case_sensitive=False, full_match=False):
+    import re
     matches = []
     processed = 0
     total_files = count_files(root_dir)
@@ -28,12 +30,20 @@ def find_files_with_target(root_dir, target, before=20, after=20, update_callbac
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
                         text = f.read()
-                        idx = text.find(target)
-                        if idx != -1:
+                        flags = 0 if case_sensitive else re.IGNORECASE
+                        if full_match:
+                            pattern = r"(?<![A-Za-z0-9_])" + re.escape(target) + r"(?![A-Za-z0-9_])"
+                        else:
+                            pattern = re.escape(target)
+
+                        it = list(re.finditer(pattern, text, flags))
+                        if it:
+                            first = it[0]
+                            idx = first.start()
                             start = max(0, idx - before)
                             end = min(len(text), idx + len(target) + after)
                             context_snippet = text[start:end].replace("\n", " ").replace("\r", " ")
-                            count = text.count(target)
+                            count = len(it)
                             matches.append((os.path.basename(full_path), full_path, context_snippet, count))
                 except Exception:
                     pass
@@ -60,6 +70,13 @@ class FileSearchApp(QWidget):
         target_layout.addWidget(self.target_label)
         target_layout.addWidget(self.target_input)
 
+        # Search options
+        self.case_sensitive_cb = QCheckBox("Case sensitive")
+        self.exact_match_cb = QCheckBox("Full match only")
+        self.exact_match_cb.setToolTip("If enabled, match whole tokens only (not substrings)")
+
+        # options will be placed inline with context inputs
+
         self.before_label = QLabel("Chars before:")
         self.before_input = QLineEdit("20")
         self.before_input.setFixedWidth(60)
@@ -72,10 +89,18 @@ class FileSearchApp(QWidget):
         context_layout.addWidget(self.before_input)
         context_layout.addWidget(self.after_label)
         context_layout.addWidget(self.after_input)
-        context_layout.addStretch()
 
         self.search_button = QPushButton("🔍 Search")
         self.search_button.clicked.connect(self.start_search)
+
+        # Place options and search button inline with context
+        self.search_button.setText("🔍 Search")
+        context_layout.addSpacing(12)
+        context_layout.addWidget(self.case_sensitive_cb)
+        context_layout.addWidget(self.exact_match_cb)
+        context_layout.addSpacing(12)
+        context_layout.addWidget(self.search_button)
+        context_layout.addStretch()
 
         self.table = QTableWidget()
         self.table.setColumnCount(4)
@@ -134,7 +159,6 @@ class FileSearchApp(QWidget):
         content_layout.setSpacing(8)
         content_layout.addLayout(target_layout)
         content_layout.addLayout(context_layout)
-        content_layout.addWidget(self.search_button)
         content_layout.addLayout(actions_layout)
         content_layout.addWidget(self.table, 1)
 
@@ -185,7 +209,15 @@ class FileSearchApp(QWidget):
             self.status.setText(f"Searching... {processed}/{total} files scanned")
             QApplication.processEvents()
 
-        hits = find_files_with_target(root_dir, target, chars_before, chars_after, update_callback=update_progress)
+        hits = find_files_with_target(
+            root_dir,
+            target,
+            chars_before,
+            chars_after,
+            update_callback=update_progress,
+            case_sensitive=self.case_sensitive_cb.isChecked(),
+            full_match=self.exact_match_cb.isChecked(),
+        )
 
         self.progress_bar.setVisible(False)
         self.search_button.setEnabled(True)

@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
 
         self.file_input = QLineEdit()
         self.file_input.setPlaceholderText("Select your .pbip file...")
-        self.file_input.setText("C:/Users/rodrigo.ferreira/Desktop/Devoteam/Supply & Purchasing.pbip")
+        self.file_input.setText("C:/Users/rodrigo.ferreira/Desktop/Devoteam/Supply Chain.pbip")
         self.file_input.setReadOnly(False)
 
         browse_btn = QPushButton("Browse")
