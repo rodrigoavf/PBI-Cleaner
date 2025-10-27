@@ -142,17 +142,17 @@ class TabBookmarks(QWidget):
         self.collapse_button.clicked.connect(self.collapse_all_items)
         secondary_row.addWidget(self.collapse_button)
 
-        self.select_all_button = QPushButton("Select All")
+        self.select_all_button = QPushButton("✅ Select All")
         self.select_all_button.setToolTip("Select every bookmark and folder.")
         self.select_all_button.clicked.connect(self.select_all_items)
         secondary_row.addWidget(self.select_all_button)
 
-        self.unselect_all_button = QPushButton("Unselect All")
+        self.unselect_all_button = QPushButton("⬜ Unselect All")
         self.unselect_all_button.setToolTip("Clear all selections.")
         self.unselect_all_button.clicked.connect(self.unselect_all_items)
         secondary_row.addWidget(self.unselect_all_button)
 
-        self.select_not_used_button = QPushButton("Select Not Used")
+        self.select_not_used_button = QPushButton("☑️ Select Not Used")
         self.select_not_used_button.setToolTip("Select all bookmarks not referenced in any report page.")
         self.select_not_used_button.clicked.connect(self.select_not_used_items)
         secondary_row.addWidget(self.select_not_used_button)

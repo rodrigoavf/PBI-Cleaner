@@ -3,16 +3,82 @@ import sys
 import subprocess
 import webbrowser
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QLabel, QPushButton,
-    QHBoxLayout, QFileDialog, QLineEdit, QMessageBox, QStyleFactory
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QLabel,
+    QPushButton,
+    QHBoxLayout,
+    QFileDialog,
+    QLineEdit,
+    QMessageBox,
+    QStyleFactory,
+    QSizePolicy,
+    QStackedLayout,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap, QAction, QActionGroup
+from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtGui import QPixmap, QAction, QActionGroup, QPainter, QColor, QPen, QPalette
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
 from Tabs.tab_power_query import PowerQueryTab
 from Tabs.tab_bookmarks import TabBookmarks
 from common_functions import apply_theme, THEME_PRESETS
+
+
+class BusyIndicator(QWidget):
+    """Simple spinner widget for indefinite loading feedback."""
+
+    def __init__(self, diameter: int = 28, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._angle = 0
+        self._diameter = diameter
+        self._timer = QTimer(self)
+        self._timer.setInterval(80)
+        self._timer.timeout.connect(self._advance)
+        self.setFixedSize(diameter, diameter)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
+
+    def set_running(self, active: bool):
+        if active and not self._timer.isActive():
+            self._timer.start()
+        elif not active and self._timer.isActive():
+            self._timer.stop()
+        if active:
+            self.update()
+
+    def _advance(self):
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event):
+        if not self.isVisible():
+            return super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        radius = self._diameter / 2 - 2
+        painter.translate(self.width() / 2, self.height() / 2)
+
+        base_color = QColor(self.palette().color(QPalette.ColorRole.WindowText))
+        for i in range(12):
+            painter.save()
+            painter.rotate(self._angle + i * 30)
+            alpha = int(255 * (i + 1) / 12)
+            color = QColor(base_color)
+            color.setAlpha(alpha)
+            pen = QPen(color)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setWidth(3)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(0, -radius * 0.6), QPointF(0, -radius))
+            painter.restore()
+
+        painter.end()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -26,6 +92,10 @@ class MainWindow(QMainWindow):
         self.theme_action_group: QActionGroup | None = None
         self.reload_project_action: QAction | None = None
         self.open_project_folder_action: QAction | None = None
+        self.cta_stack: QStackedLayout | None = None
+        self.confirm_btn: QPushButton | None = None
+        self.loading_widget: QWidget | None = None
+        self.loading_indicator: BusyIndicator | None = None
 
         self.init_ui()
         self.setup_menu()
@@ -33,7 +103,22 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         # --- Starting screen for PBIP selection ---
+        self.cta_stack = None
+        self.confirm_btn = None
+        self.loading_widget = None
+        self.loading_indicator = None
+
         start_widget = QWidget()
+        outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(0, 20, 0, 20)
+        outer_layout.addStretch(1)
+
+        content_widget = QWidget()
+        content_widget.setMaximumWidth(720)
+        content_widget.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred,
+        )
         start_layout = QVBoxLayout()
         start_layout.setContentsMargins(60, 40, 60, 40)
         start_layout.setSpacing(20)
@@ -74,10 +159,33 @@ class MainWindow(QMainWindow):
         file_layout.addWidget(self.file_input)
         file_layout.addWidget(browse_btn)
 
-        confirm_btn = QPushButton("Continue")
-        confirm_btn.clicked.connect(self.load_main_tabs)
-        confirm_btn.setFixedWidth(180)
-        confirm_btn.setStyleSheet("font-size: 12pt; padding: 6px 12px;")
+        self.confirm_btn = QPushButton("Continue")
+        self.confirm_btn.clicked.connect(self.load_main_tabs)
+        self.confirm_btn.setFixedWidth(180)
+        self.confirm_btn.setStyleSheet("font-size: 12pt; padding: 6px 12px;")
+
+        self.loading_indicator = BusyIndicator(diameter=24, parent=self)
+        self.loading_indicator.set_running(False)
+
+        loading_label = QLabel("Loading...")
+        loading_label.setStyleSheet("font-size: 12pt;")
+
+        self.loading_widget = QWidget()
+        loading_layout = QHBoxLayout(self.loading_widget)
+        loading_layout.setContentsMargins(0, 0, 0, 0)
+        loading_layout.setSpacing(10)
+        loading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_layout.addWidget(self.loading_indicator)
+        loading_layout.addWidget(loading_label)
+        self.loading_widget.setMinimumWidth(self.confirm_btn.sizeHint().width())
+
+        self.cta_stack = QStackedLayout()
+        self.cta_stack.addWidget(self.confirm_btn)
+        self.cta_stack.addWidget(self.loading_widget)
+        self.cta_stack.setCurrentWidget(self.confirm_btn)
+
+        cta_container = QWidget()
+        cta_container.setLayout(self.cta_stack)
 
         # --- Footer credit ---
         credit_label = QLabel('<a href="https://www.linkedin.com/in/rodrigoavf/">Created by Rodrigo Ferreira</a>')
@@ -92,11 +200,15 @@ class MainWindow(QMainWindow):
         start_layout.addWidget(description)
         start_layout.addWidget(file_prompt)
         start_layout.addLayout(file_layout)
-        start_layout.addWidget(confirm_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        start_layout.addWidget(cta_container, alignment=Qt.AlignmentFlag.AlignCenter)
         start_layout.addStretch()
         start_layout.addWidget(credit_label)
 
-        start_widget.setLayout(start_layout)
+        content_widget.setLayout(start_layout)
+        outer_layout.addWidget(content_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
+        outer_layout.addStretch(1)
+
+        start_widget.setLayout(outer_layout)
         self.setCentralWidget(start_widget)
         self.setup_shortcuts()
 
@@ -299,6 +411,28 @@ class MainWindow(QMainWindow):
         self.file_input.setText(file_path)
         self.refresh_menu_state()
 
+    def show_loading(self, loading: bool):
+        """Toggle the start-screen Continue button state."""
+        if (
+            not self.cta_stack
+            or not self.confirm_btn
+            or not self.loading_widget
+        ):
+            return
+
+        if self.cta_stack.indexOf(self.confirm_btn) == -1:
+            return
+        if self.cta_stack.indexOf(self.loading_widget) == -1:
+            return
+
+        target = self.loading_widget if loading else self.confirm_btn
+        if self.cta_stack.currentWidget() is not target:
+            self.cta_stack.setCurrentWidget(target)
+
+        self.confirm_btn.setEnabled(not loading)
+        if self.loading_indicator:
+            self.loading_indicator.set_running(loading)
+
     def load_main_tabs(self):
         # If pbip_path wasn't set via Browse, try to use whatever is in the text field.
         if not self.pbip_path:
@@ -310,33 +444,55 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Missing File", "Please select a .pbip file first.")
                 return
 
-        tabs = QTabWidget()
-        dax_queries_tab = DAXQueryTab(self.pbip_path)
-        bookmarks_tab = TabBookmarks(self.pbip_path)
-        measures_tab = QWidget()
-        tables_tab = QWidget()
-        columns_tab = QWidget()
-        power_query_tab = PowerQueryTab(self.pbip_path)
-        search_tab = FileSearchApp(self.pbip_path)
+        inline_feedback = bool(self.confirm_btn and self.confirm_btn.isVisible())
 
-        # Set up placeholder content for unimplemented tabs
-        for w, label in [
-            (measures_tab, "Measures"),
-            (tables_tab, "Tables"),
-            (columns_tab, "Columns"),
-            (power_query_tab, "Power Query"),
-        ]:
-            layout = QVBoxLayout()
-            layout.addWidget(QLabel(f"Coming soon: {label} section"))
-            w.setLayout(layout)
+        if inline_feedback:
+            self.show_loading(True)
+            QApplication.processEvents()
 
-        tabs.addTab(dax_queries_tab, "DAX Queries")
-        tabs.addTab(bookmarks_tab, "Bookmarks")
-        tabs.addTab(measures_tab, "Measures")
-        tabs.addTab(tables_tab, "Tables")
-        tabs.addTab(columns_tab, "Columns")
-        tabs.addTab(power_query_tab, "Power Query")
-        tabs.addTab(search_tab, "Search Files")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            tabs = QTabWidget()
+            dax_queries_tab = DAXQueryTab(self.pbip_path)
+            bookmarks_tab = TabBookmarks(self.pbip_path)
+            measures_tab = QWidget()
+            tables_tab = QWidget()
+            columns_tab = QWidget()
+            power_query_tab = PowerQueryTab(self.pbip_path)
+            search_tab = FileSearchApp(self.pbip_path)
+
+            # Set up placeholder content for unimplemented tabs
+            for w, label in [
+                (measures_tab, "Measures"),
+                (tables_tab, "Tables"),
+                (columns_tab, "Columns"),
+                (power_query_tab, "Power Query"),
+            ]:
+                layout = QVBoxLayout()
+                layout.addWidget(QLabel(f"Coming soon: {label} section"))
+                w.setLayout(layout)
+
+            tabs.addTab(dax_queries_tab, "DAX Queries")
+            tabs.addTab(bookmarks_tab, "Bookmarks")
+            tabs.addTab(measures_tab, "Measures")
+            tabs.addTab(tables_tab, "Tables")
+            tabs.addTab(columns_tab, "Columns")
+            tabs.addTab(power_query_tab, "Power Query")
+            tabs.addTab(search_tab, "Search Files")
+        except Exception as exc:
+            if inline_feedback:
+                self.show_loading(False)
+            QMessageBox.critical(
+                self,
+                "Project Load Failed",
+                f"An error occurred while loading the project:\n{exc}",
+            )
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if inline_feedback:
+            self.show_loading(False)
 
         info_widget = QWidget()
         info_layout = QHBoxLayout()
