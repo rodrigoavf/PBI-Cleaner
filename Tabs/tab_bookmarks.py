@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
 from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QIcon, QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QBrush, QColor, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,6 +28,7 @@ class BookmarkMeta:
     display_name: str
     path: Optional[str]
     valid: bool
+    used: bool = False
     error: Optional[str] = None
 
 
@@ -59,6 +61,11 @@ class BookmarkTreeWidget(QTreeWidget):
                     return
 
         super().dragMoveEvent(event)
+
+    def edit(self, index, trigger, event):
+        if index.column() != 0:
+            return False
+        return super().edit(index, trigger, event)
 
 
 class TabBookmarks(QWidget):
@@ -93,59 +100,90 @@ class TabBookmarks(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        toolbar = QHBoxLayout()
+        toolbar = QVBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(4)
+
+        primary_row = QHBoxLayout()
         self.save_button = QPushButton("💾 Save")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.on_save_clicked)
-        toolbar.addWidget(self.save_button)
+        primary_row.addWidget(self.save_button)
 
         self.delete_button = QPushButton("❌ Delete")
         self.delete_button.setEnabled(False)
         self.delete_button.clicked.connect(self.delete_selected_item)
-        toolbar.addWidget(self.delete_button)
+        primary_row.addWidget(self.delete_button)
 
         self.reload_button = QPushButton("🔄 Reload")
         self.reload_button.clicked.connect(self.reload_from_disk)
-        toolbar.addWidget(self.reload_button)
+        primary_row.addWidget(self.reload_button)
 
         self.sort_button = QPushButton("↑↓ Sort A-Z")
         self.sort_button.setToolTip("Sort the current folder (or root) alphabetically.")
         self.sort_button.clicked.connect(self.sort_current_scope)
-        toolbar.addWidget(self.sort_button)
+        primary_row.addWidget(self.sort_button)
 
+        primary_row.addStretch()
+
+        self.dirty_label = QLabel("Unsaved changes")
+        self.dirty_label.setStyleSheet("color: #d8902f; font-style: italic;")
+        self.dirty_label.setVisible(False)
+        primary_row.addWidget(self.dirty_label)
+
+        secondary_row = QHBoxLayout()
         self.expand_button = QPushButton("⏬ Expand All")
         self.expand_button.setToolTip("Expand all folders and bookmarks.")
         self.expand_button.clicked.connect(self.expand_all_items)
-        toolbar.addWidget(self.expand_button)
+        secondary_row.addWidget(self.expand_button)
 
         self.collapse_button = QPushButton("⏫ Collapse All")
         self.collapse_button.setToolTip("Collapse all folders.")
         self.collapse_button.clicked.connect(self.collapse_all_items)
-        toolbar.addWidget(self.collapse_button)
+        secondary_row.addWidget(self.collapse_button)
 
-        toolbar.addStretch()
+        self.select_all_button = QPushButton("Select All")
+        self.select_all_button.setToolTip("Select every bookmark and folder.")
+        self.select_all_button.clicked.connect(self.select_all_items)
+        secondary_row.addWidget(self.select_all_button)
+
+        self.unselect_all_button = QPushButton("Unselect All")
+        self.unselect_all_button.setToolTip("Clear all selections.")
+        self.unselect_all_button.clicked.connect(self.unselect_all_items)
+        secondary_row.addWidget(self.unselect_all_button)
+
+        self.select_not_used_button = QPushButton("Select Not Used")
+        self.select_not_used_button.setToolTip("Select all bookmarks not referenced in any report page.")
+        self.select_not_used_button.clicked.connect(self.select_not_used_items)
+        secondary_row.addWidget(self.select_not_used_button)
+
+        secondary_row.addStretch()
 
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("Filter bookmarks...")
         self.filter_input.setClearButtonEnabled(False)
         self.filter_input.textChanged.connect(self.apply_filter)
         self.filter_input.setFixedWidth(220)
-        toolbar.addWidget(self.filter_input)
+        secondary_row.addWidget(self.filter_input)
 
         self.clear_filter_button = QPushButton("🧹 Clear")
         self.clear_filter_button.setEnabled(False)
         self.clear_filter_button.clicked.connect(self.clear_filter)
-        toolbar.addWidget(self.clear_filter_button)
+        secondary_row.addWidget(self.clear_filter_button)
 
-        self.dirty_label = QLabel("Unsaved changes")
-        self.dirty_label.setStyleSheet("color: #d8902f; font-style: italic;")
-        self.dirty_label.setVisible(False)
-        toolbar.addWidget(self.dirty_label)
+        toolbar.addLayout(primary_row)
+        toolbar.addLayout(secondary_row)
 
         layout.addLayout(toolbar)
 
         self.tree = BookmarkTreeWidget(self)
-        self.tree.setHeaderHidden(True)
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderHidden(False)
+        self.tree.setHeaderLabels(["Bookmark", "Usage"])
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.setAlternatingRowColors(True)
         self.tree.setRootIsDecorated(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -201,6 +239,12 @@ class TabBookmarks(QWidget):
             return None
         base = os.path.splitext(self.pbip_file)[0] + ".Report"
         return os.path.join(base, "definition", "bookmarks")
+
+    def pages_definition_dir(self) -> Optional[str]:
+        if not self.pbip_file:
+            return None
+        base = os.path.splitext(self.pbip_file)[0] + ".Report"
+        return os.path.join(base, "definition", "pages")
 
     def load_bookmarks(self):
         base_dir = self.bookmarks_base_dir()
@@ -301,6 +345,8 @@ class TabBookmarks(QWidget):
 
             self.bookmarks[stem] = BookmarkMeta(display_name=display, path=path, valid=valid, error=error_message)
 
+        self._compute_bookmark_usage()
+
         # Build tree according to items order
         bookmarks_in_tree: Set[str] = set()
         bookmarks_in_folders = {child for folder in self.folders.values() for child in folder["children"]}
@@ -341,6 +387,39 @@ class TabBookmarks(QWidget):
         self.on_tree_structure_changed()
         self.apply_filter()
         self.update_actions_state()
+        if not self._loading:
+            self._adjust_usage_column_width()
+
+    def _compute_bookmark_usage(self):
+        for meta in self.bookmarks.values():
+            meta.used = False
+
+        pages_dir = self.pages_definition_dir()
+        if not pages_dir or not os.path.isdir(pages_dir):
+            return
+
+        remaining: Set[str] = set(self.bookmarks.keys())
+        if not remaining:
+            return
+
+        for root, _, files in os.walk(pages_dir):
+            for fname in files:
+                if not fname.lower().endswith(".json"):
+                    continue
+                path = os.path.join(root, fname)
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                        content = fh.read()
+                except Exception:
+                    continue
+
+                matched = {name for name in remaining if name in content}
+                if matched:
+                    for name in matched:
+                        self.bookmarks[name].used = True
+                    remaining.difference_update(matched)
+                    if not remaining:
+                        return
 
     # --- UI helpers -------------------------------------------------------
     def update_status(self, text: str, *, warning: bool):
@@ -366,7 +445,7 @@ class TabBookmarks(QWidget):
 
     def create_folder_item(self, folder_id: str) -> QTreeWidgetItem:
         display = self.folders.get(folder_id, {}).get("display", folder_id)
-        item = QTreeWidgetItem([display])
+        item = QTreeWidgetItem([display, ""])
         item.setData(0, self.ITEM_TYPE_ROLE, self.ITEM_FOLDER)
         item.setData(0, self.ITEM_ID_ROLE, folder_id)
         flags = (
@@ -385,14 +464,20 @@ class TabBookmarks(QWidget):
         meta = self.bookmarks.get(bookmark_id)
         if meta is None:
             display = f"{bookmark_id} (missing)"
-            item = QTreeWidgetItem([display])
+            item = QTreeWidgetItem([display, ""])
             item.setFlags(Qt.ItemFlag.ItemIsSelectable)
             item.setToolTip(0, "Bookmark file not found.")
-            meta = BookmarkMeta(display_name=display, path=None, valid=False, error="Missing bookmark file.")
+            meta = BookmarkMeta(
+                display_name=display,
+                path=None,
+                valid=False,
+                used=False,
+                error="Missing bookmark file.",
+            )
             self.bookmarks[bookmark_id] = meta
         else:
             display = meta.display_name
-            item = QTreeWidgetItem([display])
+            item = QTreeWidgetItem([display, ""])
             flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
             if meta.valid:
                 flags |= Qt.ItemFlag.ItemIsEditable
@@ -405,12 +490,70 @@ class TabBookmarks(QWidget):
         item.setData(0, self.ITEM_TYPE_ROLE, self.ITEM_BOOKMARK)
         item.setData(0, self.ITEM_ID_ROLE, bookmark_id)
 
+        self._apply_usage_style(item, meta)
+
         if parent is None:
             self.tree.addTopLevelItem(item)
         else:
             parent.addChild(item)
 
+        if not self._loading:
+            self._adjust_usage_column_width()
+
+    def _apply_usage_style(self, item: QTreeWidgetItem, meta: Optional[BookmarkMeta]):
+        if meta is None:
+            item.setText(1, "")
+            item.setForeground(1, QBrush())
+            return
+
+        if meta.used:
+            item.setText(1, "✔ Used")
+            item.setForeground(1, QBrush(QColor("#2e7d32")))
+        else:
+            item.setText(1, "✘ Not Used")
+            item.setForeground(1, QBrush(QColor("#c62828")))
+
+    def _adjust_usage_column_width(self):
+        if self.tree.columnCount() <= 1:
+            return
+        column = 1
+        header = self.tree.header()
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.doItemsLayout()
+        width = max(self.tree.sizeHintForColumn(column), header.sectionSize(column))
+        if width <= 0:
+            width = 80
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(column, int(width * 2))
+
+
     # --- Actions ----------------------------------------------------------
+    def select_all_items(self):
+        self.tree.selectAll()
+
+    def unselect_all_items(self):
+        self.tree.clearSelection()
+        self.update_actions_state()
+
+    def select_not_used_items(self):
+        def traverse(item: QTreeWidgetItem):
+            if item.data(0, self.ITEM_TYPE_ROLE) == self.ITEM_BOOKMARK:
+                bookmark_id = item.data(0, self.ITEM_ID_ROLE)
+                meta = self.bookmarks.get(bookmark_id)
+                if meta and not meta.used:
+                    item.setSelected(True)
+            for idx in range(item.childCount()):
+                traverse(item.child(idx))
+
+        self.tree.blockSignals(True)
+        try:
+            self.tree.clearSelection()
+            for i in range(self.tree.topLevelItemCount()):
+                traverse(self.tree.topLevelItem(i))
+        finally:
+            self.tree.blockSignals(False)
+        self.update_actions_state()
+
     def on_save_clicked(self):
         if not self.pbip_file:
             QMessageBox.warning(self, "No Project", "Select a PBIP project before saving bookmarks.")
@@ -968,6 +1111,8 @@ class TabBookmarks(QWidget):
 
     # --- Tree synchronization ---------------------------------------------
     def on_item_changed(self, item: QTreeWidgetItem, column: int):
+        if column != 0:
+            return
         if self._loading or self._ignore_item_changed:
             return
         text = item.text(column).strip()
@@ -980,7 +1125,10 @@ class TabBookmarks(QWidget):
                 item.setText(0, previous)
             else:
                 bookmark_id = item.data(0, self.ITEM_ID_ROLE)
-                previous = self.bookmarks.get(bookmark_id, BookmarkMeta(bookmark_id, None, False)).display_name
+                previous = self.bookmarks.get(
+                    bookmark_id,
+                    BookmarkMeta(display_name=bookmark_id, path=None, valid=False),
+                ).display_name
                 item.setText(0, previous)
             self._ignore_item_changed = False
             return
