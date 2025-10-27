@@ -86,6 +86,7 @@ class TabBookmarks(QWidget):
         self._loading = False
         self._suppress_dirty = False
         self._ignore_item_changed = False
+        self.summary_label: QLabel | None = None
 
         self.folder_icon = self._load_icon("Folder.svg")
 
@@ -97,12 +98,12 @@ class TabBookmarks(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(8, 8, 8, 0)
         layout.setSpacing(8)
 
         toolbar = QVBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(4)
+        toolbar.setSpacing(8)
 
         primary_row = QHBoxLayout()
         self.save_button = QPushButton("💾 Save")
@@ -205,10 +206,20 @@ class TabBookmarks(QWidget):
         self.tree.customContextMenuRequested.connect(self.show_context_menu)
         layout.addWidget(self.tree)
 
+        hotkey_hint = QLabel("F2: Rename  |  Delete: Delete  |  Ctrl+N: New folder  |  Alt+Up: Move up  |  Alt+Down: Move down")
+        hotkey_hint.setStyleSheet("color: #666666; font-size: 10px;")
+        hotkey_hint.setWordWrap(True)
+        layout.addWidget(hotkey_hint)
+
+        self.summary_label = QLabel("Bookmarks: 0 total | 0 unused")
+        self.summary_label.setStyleSheet("color: #666666;")
+        layout.addWidget(self.summary_label)
+
         self.status_label = QLabel()
         self.status_label.setStyleSheet("color: #d9534f;")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        self.refresh_summary_label()
 
         # Shortcuts
         QShortcut(QKeySequence("F2"), self, activated=self.rename_selected_item)
@@ -440,8 +451,30 @@ class TabBookmarks(QWidget):
         self.dirty_label.setVisible(dirty)
 
     def update_actions_state(self):
-        has_selection = bool(self.tree.selectedItems())
+        has_selection = bool(self.tree.selectedItems()) if self.tree else False
         self.delete_button.setEnabled(has_selection)
+        self.refresh_summary_label()
+
+    def refresh_summary_label(self):
+        if not self.summary_label:
+            return
+
+        total = len(self.bookmarks)
+        unused = sum(1 for meta in self.bookmarks.values() if not meta.used)
+
+        selected = 0
+        if self.tree:
+            selected = sum(
+                1
+                for item in self.tree.selectedItems()
+                if item.data(0, self.ITEM_TYPE_ROLE) == self.ITEM_BOOKMARK
+            )
+
+        parts = [f"Bookmarks: {total} total", f"{unused} unused"]
+        if selected:
+            parts.append(f"{selected} selected")
+
+        self.summary_label.setText(" | ".join(parts))
 
     def create_folder_item(self, folder_id: str) -> QTreeWidgetItem:
         display = self.folders.get(folder_id, {}).get("display", folder_id)

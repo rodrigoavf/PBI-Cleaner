@@ -95,6 +95,7 @@ class PowerQueryTab(QWidget):
         self.table_tree.setDragEnabled(True)
         self.table_tree.setAcceptDrops(True)
         self.table_tree.setDropIndicatorShown(True)
+        self.table_tree.setAlternatingRowColors(True)
         self.table_tree.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table_tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.table_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -147,7 +148,7 @@ class PowerQueryTab(QWidget):
         right_layout.addWidget(self.query_editor)
 
         form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 8, 0, 0)
+        form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(6)
 
         # Hotkey hints - right

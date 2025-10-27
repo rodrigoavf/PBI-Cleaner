@@ -67,6 +67,7 @@ class DAXQueryTab(QWidget):
         self.query_list.setDragEnabled(True)
         self.query_list.setAcceptDrops(True)
         self.query_list.setDropIndicatorShown(True)
+        self.query_list.setAlternatingRowColors(True)
         self.query_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.query_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.query_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
