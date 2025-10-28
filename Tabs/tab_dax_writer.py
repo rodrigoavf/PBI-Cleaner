@@ -211,7 +211,7 @@ class DAXWriterTab(QWidget):
         self.pbip_file = pbip_file
         self.tables_data: Dict[str, List[str]] = {}
         self.table_patterns: List[Tuple[re.Pattern, str]] = []
-        self.column_patterns: List[Tuple[List[re.Pattern], Tuple[str, str]]] = []
+        self.column_patterns: List[Tuple[List[re.Pattern], re.Pattern, Tuple[str, str]]] = []
         self.api_client = ChatGPTFreeClient()
         self.thread_pool = QThreadPool.globalInstance()
 
@@ -223,6 +223,7 @@ class DAXWriterTab(QWidget):
         self.status_label: Optional[QLabel] = None
         self.prompt_highlighter: Optional[TableColumnHighlighter] = None
         self.output_highlighter: Optional[TableColumnHighlighter] = None
+        self._column_highlight_patterns: List[re.Pattern] = []
 
         self._building_metadata = False
 
@@ -415,10 +416,7 @@ class DAXWriterTab(QWidget):
             return unique
 
         table_regexes = _deduplicate([pattern for pattern, _ in self.table_patterns])
-        column_regexes: List[re.Pattern] = []
-        for pattern_list, _ in self.column_patterns:
-            column_regexes.extend(pattern_list)
-        column_regexes = _deduplicate(column_regexes)
+        column_regexes = _deduplicate(self._column_highlight_patterns)
 
         if self.prompt_highlighter:
             self.prompt_highlighter.update_patterns(table_regexes, column_regexes)
@@ -444,6 +442,7 @@ class DAXWriterTab(QWidget):
     def _build_patterns(self):
         self.table_patterns = []
         self.column_patterns = []
+        self._column_highlight_patterns = []
 
         for table in self.tables_data:
             for form in self._table_autocomplete_forms(table):
@@ -458,19 +457,22 @@ class DAXWriterTab(QWidget):
         for table, columns in self.tables_data.items():
             for column in columns:
                 escaped_col = column.replace("]", "]]")
-                column_patterns: List[re.Pattern] = [
-                    re.compile(rf"\[\s*{re.escape(escaped_col)}\s*\]", re.IGNORECASE)
-                ]
+                bracket_pattern = re.compile(
+                    rf"\[\s*{re.escape(escaped_col)}\s*\]", re.IGNORECASE
+                )
+                bound_patterns: List[re.Pattern] = []
                 for table_form in self._table_autocomplete_forms(table):
                     if not table_form:
                         continue
-                    column_patterns.append(
+                    bound_patterns.append(
                         re.compile(
                             rf"{re.escape(table_form)}\s*\[\s*{re.escape(escaped_col)}\s*\]",
                             re.IGNORECASE,
                         )
                     )
-                self.column_patterns.append((column_patterns, (table, column)))
+                self.column_patterns.append((bound_patterns, bracket_pattern, (table, column)))
+                self._column_highlight_patterns.extend(bound_patterns)
+                self._column_highlight_patterns.append(bracket_pattern)
 
     # ----- Prompt helpers -----------------------------------------------------
     def _on_prompt_changed(self):
@@ -490,8 +492,8 @@ class DAXWriterTab(QWidget):
             if pattern.search(text):
                 mentioned_tables.add(table)
 
-        for patterns, (table, column) in self.column_patterns:
-            if any(p.search(text) for p in patterns):
+        for bound_patterns, _, (table, column) in self.column_patterns:
+            if bound_patterns and any(p.search(text) for p in bound_patterns):
                 mentioned_columns.add((table, column))
                 mentioned_tables.add(table)
 

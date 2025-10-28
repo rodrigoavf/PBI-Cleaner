@@ -1,0 +1,12 @@
+*** Begin Patch
+*** Update File: Tabs/tab_dax_writer.py
+@@
+-        for table, columns in self.tables_data.items():
+-            tables_terms.extend(self._table_autocomplete_forms(table))
+-            for column in columns:
+-                columns_terms.extend(self._column_autocomplete_forms(table, column))
++        for table, columns in self.tables_data.items():
++            tables_terms.extend(self._table_autocomplete_forms(table))
++            for column in columns:
++                columns_terms.extend(self._column_autocomplete_forms(table, column))
+*** End Patch
