@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+from collections import defaultdict
 from typing import Dict, Optional
 
 from PyQt6.QtCore import Qt
@@ -158,7 +159,7 @@ class PowerQueryTab(QWidget):
         right_layout.addWidget(hotkey_hint_right)
 
         # Hotkey hints - left
-        hotkey_hint_left = QLabel("F2: Rename\nDelete: Delete\nCtrl+N: New folder\nSpace: Set as default\nAlt+Up: Move up\nAlt+Down: Move down")
+        hotkey_hint_left = QLabel("F2: Rename\nDelete folder: Delete\nCtrl+N: New folder\nSpace: Set as default\nAlt+Up: Move up\nAlt+Down: Move down")
         hotkey_hint_left.setStyleSheet("color: #666666; font-size: 10px;")
         hotkey_hint_left.setWordWrap(True)
         left_layout.addWidget(hotkey_hint_left)
@@ -176,10 +177,122 @@ class PowerQueryTab(QWidget):
         splitter.setSizes([250, 750])
 
         main_layout.addWidget(splitter)
+        self.setup_shortcuts()
 
     def setup_shortcuts(self):
-        self.new_folder_shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
-        self.new_folder_shortcut.activated.connect(self.create_new_folder)
+        self.new_folder_shortcut = QShortcut(QKeySequence("Ctrl+N"), self.table_tree)
+        self.new_folder_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.new_folder_shortcut.activated.connect(self._shortcut_create_folder)
+
+        self.move_up_shortcut = QShortcut(QKeySequence("Alt+Up"), self.table_tree)
+        self.move_up_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.move_up_shortcut.activated.connect(lambda: self.move_selected_items(-1))
+
+        self.move_down_shortcut = QShortcut(QKeySequence("Alt+Down"), self.table_tree)
+        self.move_down_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.move_down_shortcut.activated.connect(lambda: self.move_selected_items(1))
+
+        self.delete_folder_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.table_tree)
+        self.delete_folder_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.delete_folder_shortcut.activated.connect(self.delete_selected_folders)
+
+    def _shortcut_create_folder(self):
+        current = self.table_tree.currentItem()
+        parent_folder = None
+        if current:
+            current_type = current.data(0, self.TYPE_ROLE)
+            if current_type == self.ITEM_FOLDER:
+                parent_folder = current
+            else:
+                ancestor = current.parent()
+                if ancestor and ancestor.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER:
+                    parent_folder = ancestor
+        self.create_new_folder(parent_folder)
+
+    def move_selected_items(self, direction: int):
+        if direction not in (-1, 1):
+            return
+        selectable_types = {self.ITEM_FOLDER, self.ITEM_TABLE}
+        selected = [item for item in self.table_tree.selectedItems() if item.data(0, self.TYPE_ROLE) in selectable_types]
+        if not selected:
+            return
+
+        parent_groups: dict[int, list[QTreeWidgetItem]] = defaultdict(list)
+        parent_refs: dict[int, Optional[QTreeWidgetItem]] = {}
+        for item in selected:
+            parent = item.parent()
+            key = id(parent) if parent is not None else -1
+            parent_refs[key] = parent
+            parent_groups[key].append(item)
+
+        moved = False
+        self._ignore_tree_changes = True
+        try:
+            for key, items in parent_groups.items():
+                parent = parent_refs.get(key)
+                items.sort(key=lambda itm: self._get_parent_and_index(itm)[1], reverse=(direction > 0))
+                for item in items:
+                    parent_ref, index = self._get_parent_and_index(item)
+                    if index < 0:
+                        continue
+                    sibling_count = parent_ref.childCount() if parent_ref else self.table_tree.topLevelItemCount()
+                    if direction == -1:
+                        if index == 0:
+                            continue
+                        self._take_item(parent_ref, index)
+                        self._insert_item(parent_ref, index - 1, item)
+                        moved = True
+                    else:
+                        if index >= sibling_count - 1:
+                            continue
+                        self._take_item(parent_ref, index)
+                        self._insert_item(parent_ref, index + 1, item)
+                        moved = True
+        finally:
+            self._ignore_tree_changes = False
+
+        if moved:
+            self.table_tree.clearSelection()
+            for item in selected:
+                item.setSelected(True)
+            if selected:
+                self.table_tree.setCurrentItem(selected[0])
+                self.table_tree.scrollToItem(selected[0], QAbstractItemView.ScrollHint.EnsureVisible)
+            self.on_tree_structure_changed()
+
+    def delete_selected_folders(self):
+        selected = [item for item in self.table_tree.selectedItems() if item.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER and item.data(0, self.KEY_ROLE) is not None]
+        if not selected:
+            return
+        # Delete deeper folders first so parents still exist when needed
+        selected.sort(key=self._item_depth, reverse=True)
+        for folder in selected:
+            self.delete_folder(folder)
+
+    def _get_parent_and_index(self, item: QTreeWidgetItem):
+        parent = item.parent()
+        if parent:
+            return parent, parent.indexOfChild(item)
+        return None, self.table_tree.indexOfTopLevelItem(item)
+
+    def _take_item(self, parent: Optional[QTreeWidgetItem], index: int):
+        if parent is None:
+            return self.table_tree.takeTopLevelItem(index)
+        return parent.takeChild(index)
+
+    def _insert_item(self, parent: Optional[QTreeWidgetItem], index: int, item: QTreeWidgetItem):
+        if parent is None:
+            self.table_tree.insertTopLevelItem(index, item)
+        else:
+            parent.insertChild(index, item)
+
+    def _item_depth(self, item: QTreeWidgetItem) -> int:
+        depth = 0
+        current = item.parent()
+        while current is not None:
+            depth += 1
+            current = current.parent()
+        return depth
 
     def choose_pbip_file(self):
         """Prompt the user to pick a PBIP file and load it."""
@@ -610,21 +723,28 @@ class PowerQueryTab(QWidget):
         chosen = menu.exec(global_pos)
 
         if chosen == new_folder_action:
-            self.create_new_folder()
+            # If a folder was right-clicked, create the new folder inside it
+            parent_folder = item if (item and item.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER) else None
+            self.create_new_folder(parent_folder)
         elif rename_action and chosen == rename_action:
             self.rename_folder(item)
         elif delete_action and chosen == delete_action:
             self.delete_folder(item)
 
-    def create_new_folder(self):
+    def create_new_folder(self, parent_folder: Optional[QTreeWidgetItem] = None):
         name = self.generate_unique_folder_name("New Folder")
         folder_item = self._create_folder_item(name, name)
-        other_item = self.find_other_queries_item()
-        if other_item:
-            idx = self.table_tree.indexOfTopLevelItem(other_item)
-            self.table_tree.insertTopLevelItem(idx, folder_item)
+        # If a parent folder is provided, add as a child (nested folder).
+        if parent_folder is not None:
+            parent_folder.addChild(folder_item)
         else:
-            self.table_tree.addTopLevelItem(folder_item)
+            # Otherwise, add at top-level just before Other Queries.
+            other_item = self.find_other_queries_item()
+            if other_item:
+                idx = self.table_tree.indexOfTopLevelItem(other_item)
+                self.table_tree.insertTopLevelItem(idx, folder_item)
+            else:
+                self.table_tree.addTopLevelItem(folder_item)
         max_order = max(self.query_groups.values(), default=-1)
         self.query_groups[name] = max_order + 1
         self.table_tree.setCurrentItem(folder_item)
@@ -650,8 +770,13 @@ class PowerQueryTab(QWidget):
             if child.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
                 other_item.addChild(child)
         self.sort_tables_in_folder(other_item)
-        idx = self.table_tree.indexOfTopLevelItem(item)
-        self.table_tree.takeTopLevelItem(idx)
+        parent = item.parent()
+        if parent is None:
+            idx = self.table_tree.indexOfTopLevelItem(item)
+            if idx != -1:
+                self.table_tree.takeTopLevelItem(idx)
+        else:
+            parent.removeChild(item)
         self.query_groups.pop(folder_key, None)
         self.ensure_other_queries_last()
         self.on_tree_structure_changed()
@@ -711,15 +836,48 @@ class PowerQueryTab(QWidget):
             current_item = self.table_tree.currentItem()
             self.ensure_other_queries_last()
 
-            for idx in range(self.table_tree.topLevelItemCount()):
-                folder = self.table_tree.topLevelItem(idx)
-                child_idx = folder.childCount() - 1
-                while child_idx >= 0:
-                    child = folder.child(child_idx)
-                    if child.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER:
-                        folder.takeChild(child_idx)
-                        self.table_tree.addTopLevelItem(child)
-                    child_idx -= 1
+            # Enforce structure rules:
+            # - No items (tables or folders) are allowed inside a table.
+            # - Tables may not exist at top-level; move them to Other Queries.
+            # - Folders can be nested (allowed), so do not force-flatten them.
+
+            # 1) Move any top-level tables to Other Queries (keeps structure sane)
+            idx = self.table_tree.topLevelItemCount() - 1
+            while idx >= 0:
+                top_item = self.table_tree.topLevelItem(idx)
+                if top_item and top_item.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
+                    taken = self.table_tree.takeTopLevelItem(idx)
+                    other = self.ensure_other_queries_folder()
+                    other.addChild(taken)
+                idx -= 1
+
+            # 2) For each table anywhere in the tree, ensure its children are columns only.
+            def _fix_table_children(item: QTreeWidgetItem):
+                if item.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
+                    parent_folder = item.parent()
+                    move_index = item.childCount() - 1
+                    while move_index >= 0:
+                        ch = item.child(move_index)
+                        ch_type = ch.data(0, self.TYPE_ROLE)
+                        if ch_type == self.ITEM_TABLE:
+                            # Table inside table -> move as sibling under the parent folder
+                            item.takeChild(move_index)
+                            if parent_folder is not None:
+                                parent_folder.addChild(ch)
+                            else:
+                                self.ensure_other_queries_folder().addChild(ch)
+                        elif ch_type == self.ITEM_FOLDER:
+                            # Folder inside table -> move to top-level
+                            item.takeChild(move_index)
+                            self.table_tree.addTopLevelItem(ch)
+                        move_index -= 1
+                # Recurse into children (folders may contain tables)
+                for i in range(item.childCount()):
+                    _fix_table_children(item.child(i))
+
+            for i in range(self.table_tree.topLevelItemCount()):
+                _fix_table_children(self.table_tree.topLevelItem(i))
+
             self.ensure_other_queries_last()
 
             new_group_order: dict[str, int] = {}
@@ -730,19 +888,26 @@ class PowerQueryTab(QWidget):
                 if folder_key is not None:
                     new_group_order[folder_key] = order
                     order += 1
-                for child_idx in range(folder.childCount()):
-                    child = folder.child(child_idx)
-                    item_type = child.data(0, self.TYPE_ROLE)
-                    if item_type == self.ITEM_TABLE:
-                        table_name = child.data(0, Qt.ItemDataRole.UserRole)
-                        self.tables_data[table_name]["query_group"] = folder_key
-                        child.setData(0, self.KEY_ROLE, folder_key)
-                        self.ensure_columns_sorted(child)
-                    elif item_type == self.ITEM_COLUMN:
-                        parent = child.parent()
-                        if parent:
-                            table_name = parent.data(0, Qt.ItemDataRole.UserRole)
-                            child.setData(0, Qt.ItemDataRole.UserRole, table_name)
+                # Walk recursively to update any tables under this folder
+                def _update_tables_in_folder(folder_item: QTreeWidgetItem, current_group_key: Optional[str]):
+                    for cidx in range(folder_item.childCount()):
+                        child = folder_item.child(cidx)
+                        ctype = child.data(0, self.TYPE_ROLE)
+                        if ctype == self.ITEM_TABLE:
+                            table_name = child.data(0, Qt.ItemDataRole.UserRole)
+                            self.tables_data[table_name]["query_group"] = current_group_key
+                            child.setData(0, self.KEY_ROLE, current_group_key)
+                            self.ensure_columns_sorted(child)
+                            # Columns: ensure they carry table name data
+                            for cc in range(child.childCount()):
+                                col = child.child(cc)
+                                if col.data(0, self.TYPE_ROLE) == self.ITEM_COLUMN:
+                                    col.setData(0, Qt.ItemDataRole.UserRole, table_name)
+                        elif ctype == self.ITEM_FOLDER:
+                            # Recurse into nested folder preserving its own key for its tables
+                            _update_tables_in_folder(child, child.data(0, self.KEY_ROLE))
+
+                _update_tables_in_folder(folder, folder_key)
             self.query_groups = new_group_order
             if current_item:
                 self.table_tree.setCurrentItem(current_item)
@@ -767,7 +932,8 @@ class PowerQueryTab(QWidget):
         table_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
         table_item.setData(0, self.TYPE_ROLE, self.ITEM_TABLE)
         table_item.setData(0, self.KEY_ROLE, group_key)
-        flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
+        # Do not allow dropping into a table; only allow selecting/dragging it.
+        flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
         table_item.setFlags(flags)
         table_type = (self.tables_data.get(table_name, {}).get("table_type") or "").lower()
         icon = self.table_icons.get(table_type)
