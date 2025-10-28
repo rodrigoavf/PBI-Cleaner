@@ -22,7 +22,7 @@ from PyQt6.QtCore import Qt, QTimer, QPointF
 from PyQt6.QtGui import QPixmap, QAction, QActionGroup, QPainter, QColor, QPen, QPalette
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
-from Tabs.tab_power_query import PowerQueryTab
+from Tabs.tab_tables_elements import PowerQueryTab
 from Tabs.tab_bookmarks import TabBookmarks
 from common_functions import apply_theme, THEME_PRESETS
 
@@ -455,29 +455,14 @@ class MainWindow(QMainWindow):
             tabs = QTabWidget()
             dax_queries_tab = DAXQueryTab(self.pbip_path)
             bookmarks_tab = TabBookmarks(self.pbip_path)
-            measures_tab = QWidget()
-            tables_tab = QWidget()
-            columns_tab = QWidget()
-            power_query_tab = PowerQueryTab(self.pbip_path)
+            dax_writer_tab = QWidget()
+            tables_tab = PowerQueryTab(self.pbip_path)
             search_tab = FileSearchApp(self.pbip_path)
 
-            # Set up placeholder content for unimplemented tabs
-            for w, label in [
-                (measures_tab, "Measures"),
-                (tables_tab, "Tables"),
-                (columns_tab, "Columns"),
-                (power_query_tab, "Power Query"),
-            ]:
-                layout = QVBoxLayout()
-                layout.addWidget(QLabel(f"Coming soon: {label} section"))
-                w.setLayout(layout)
-
-            tabs.addTab(dax_queries_tab, "DAX Queries")
+            tabs.addTab(tables_tab, "Tables And Elements")
             tabs.addTab(bookmarks_tab, "Bookmarks")
-            tabs.addTab(measures_tab, "Measures")
-            tabs.addTab(tables_tab, "Tables")
-            tabs.addTab(columns_tab, "Columns")
-            tabs.addTab(power_query_tab, "Power Query")
+            tabs.addTab(dax_queries_tab, "DAX Queries")
+            tabs.addTab(dax_writer_tab, "DAX Writer")
             tabs.addTab(search_tab, "Search Files")
         except Exception as exc:
             if inline_feedback:
