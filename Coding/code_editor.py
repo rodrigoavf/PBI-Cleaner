@@ -1,4 +1,5 @@
 import weakref
+from typing import Optional
 
 from PyQt6.QtCore import Qt, QStringListModel
 from PyQt6.QtGui import QTextCursor
@@ -33,6 +34,7 @@ class CodeEditor(QPlainTextEdit):
         self._completer_model: QStringListModel | None = None
         self._function_names: set[str] = set()
         self._highlighter = None
+        self._highlighter_enabled = True
         self._language: str | None = None
         self._line_comment: str | None = None
         self._ctrl_k_sequence: bool = False
@@ -81,11 +83,20 @@ class CodeEditor(QPlainTextEdit):
     def language(self) -> str | None:
         return self._language
 
-    def set_language(self, language: str | None, *, force: bool = False):
+    def set_language(
+        self,
+        language: str | None,
+        *,
+        force: bool = False,
+        enable_highlighter: Optional[bool] = None,
+    ):
         """Configure syntax support for the requested language."""
         requested = language.lower() if language else None
         if not force and requested == self._language:
             return
+
+        if enable_highlighter is not None:
+            self._highlighter_enabled = bool(enable_highlighter)
 
         cls = self.__class__
         if self._language == "dax":
@@ -108,6 +119,7 @@ class CodeEditor(QPlainTextEdit):
             self._function_names.clear()
             self.setCompleter(None)
             self._line_comment = None
+            self._highlighter = None
             return
 
         self._language = definition.name.lower()
@@ -130,7 +142,7 @@ class CodeEditor(QPlainTextEdit):
             self.setCompleter(None)
             self._completer_model = None
 
-        if definition.highlighter_cls:
+        if definition.highlighter_cls and self._highlighter_enabled:
             try:
                 self._highlighter = definition.highlighter_cls(self.document())
                 try:
@@ -164,7 +176,11 @@ class CodeEditor(QPlainTextEdit):
             if editor is None:
                 continue
             try:
-                editor.set_language("dax", force=True)
+                editor.set_language(
+                    "dax",
+                    force=True,
+                    enable_highlighter=editor._highlighter_enabled,
+                )
             except Exception:
                 pass
 
