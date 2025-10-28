@@ -89,7 +89,7 @@ class PowerQueryTab(QWidget):
 
         self.table_tree = QTreeWidget()
         self.table_tree.setHeaderHidden(True)
-        self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         left_layout.addWidget(self.table_tree)
         self.table_tree.setDragEnabled(True)
