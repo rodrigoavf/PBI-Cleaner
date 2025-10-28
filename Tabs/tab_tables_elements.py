@@ -25,6 +25,7 @@ from PyQt6.QtGui import (
     QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence, QIcon, QPixmap, QImage
 )
 from Coding.code_editor import CodeEditor
+from Coding.code_editor_support import set_dax_model_identifiers
 from common_functions import code_editor_font, APP_THEME
 
 
@@ -233,6 +234,46 @@ class PowerQueryTab(QWidget):
         for idx in range(len(parts)):
             expanded.append("/".join(parts[: idx + 1]))
         return expanded
+
+    def _dax_table_identifiers(self, table_name: str) -> List[str]:
+        if not table_name:
+            return []
+        name = table_name.strip()
+        if not name:
+            return []
+        identifiers = [name]
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            escaped = name.replace("'", "''")
+            identifiers.append(f"'{escaped}'")
+        return identifiers
+
+    def _dax_column_identifiers(self, table_name: str, column_name: str) -> List[str]:
+        if not column_name:
+            return []
+        column = column_name.replace("]", "]]").strip()
+        if not column:
+            return []
+        identifiers = [f"[{column}]"]
+        for table_identifier in self._dax_table_identifiers(table_name):
+            identifiers.append(f"{table_identifier}[{column}]")
+        return identifiers
+
+    def _update_dax_model_identifiers(self):
+        table_terms: List[str] = []
+        column_terms: List[str] = []
+
+        try:
+            table_names = sorted(self.tables_data.keys(), key=str.casefold)
+        except Exception:
+            table_names = list(self.tables_data.keys())
+
+        for table_name in table_names:
+            table_terms.extend(self._dax_table_identifiers(table_name))
+            info = self.tables_data.get(table_name, {}) or {}
+            for column in info.get("columns", []) or []:
+                column_terms.extend(self._dax_column_identifiers(table_name, column))
+
+        set_dax_model_identifiers(table_terms, column_terms)
 
     def _shortcut_create_folder(self):
         current = self.table_tree.currentItem()
@@ -531,6 +572,7 @@ class PowerQueryTab(QWidget):
                 }
 
             self.tables_data = tables_data
+            self._update_dax_model_identifiers()
             self.populate_tree()
             self._set_dirty(False)
 
@@ -803,6 +845,7 @@ class PowerQueryTab(QWidget):
         self.import_mode_combo.blockSignals(False)
         self.import_mode_combo.setEnabled(False)
         self.ignore_editor_changes = False
+        set_dax_model_identifiers([], [])
 
     def expand_all_groups(self):
         self.table_tree.expandAll()

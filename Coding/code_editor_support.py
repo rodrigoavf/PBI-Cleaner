@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, Callable, Iterable
 import re
 
 from PyQt6.QtCore import Qt, QEvent, QRegularExpression, QObject
@@ -96,6 +96,13 @@ DAX_FUNCTIONS = [
     'DATATABLE', 'SUMMARIZE', 'SUMMARIZECOLUMNS',
     'TOPN', 'RANK', 'ROWNUMBER', 'MATCHBY', 'LOOKUPWITHTOTALS', 'FIRST', 'LAST', 'NEXT', 'PREVIOUS',
 ]
+
+DAX_MODEL_TABLES: list[str] = []
+DAX_MODEL_COLUMNS: list[str] = []
+
+
+def _dax_model_terms() -> list[str]:
+    return DAX_MODEL_TABLES + DAX_MODEL_COLUMNS
 
 M_KEYWORDS = [
     # Core syntax
@@ -594,10 +601,19 @@ class LanguageDefinition:
     functions: Sequence[str]
     highlighter_cls: type[QSyntaxHighlighter] | None = None
     line_comment: str | None = None
+    extra_terms_provider: Callable[[], Iterable[str]] | None = None
 
     def completions(self) -> list[str]:
         """Return deduplicated, sorted completion terms."""
-        return sorted({*(self.keywords or ()), *(self.functions or ())})
+        terms = set(self.keywords or ())
+        terms.update(self.functions or ())
+        if self.extra_terms_provider:
+            try:
+                extra = self.extra_terms_provider() or ()
+                terms.update(str(term) for term in extra if term)
+            except Exception:
+                pass
+        return sorted(terms)
 
 
 _LANGUAGE_DEFINITIONS: dict[str, LanguageDefinition] = {
@@ -607,6 +623,7 @@ _LANGUAGE_DEFINITIONS: dict[str, LanguageDefinition] = {
         functions=DAX_FUNCTIONS,
         highlighter_cls=DAXHighlighter,
         line_comment='//',
+        extra_terms_provider=_dax_model_terms,
     ),
     'm': LanguageDefinition(
         name='m',
@@ -616,6 +633,46 @@ _LANGUAGE_DEFINITIONS: dict[str, LanguageDefinition] = {
         line_comment='//',
     ),
 }
+
+
+def set_dax_model_identifiers(
+    tables: Sequence[str] | None = None,
+    columns: Sequence[str] | None = None,
+) -> None:
+    """Update the cached list of DAX model tables and columns used for completions."""
+
+    def _normalize(items: Sequence[str] | None) -> list[str]:
+        seen = set()
+        normalized: list[str] = []
+        if not items:
+            return normalized
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        normalized.sort(key=str.casefold)
+        return normalized
+
+    new_tables = _normalize(tables)
+    new_columns = _normalize(columns)
+
+    global DAX_MODEL_TABLES, DAX_MODEL_COLUMNS
+    if new_tables == DAX_MODEL_TABLES and new_columns == DAX_MODEL_COLUMNS:
+        return
+
+    DAX_MODEL_TABLES = new_tables
+    DAX_MODEL_COLUMNS = new_columns
+
+    try:
+        from Coding.code_editor import CodeEditor
+
+        CodeEditor.refresh_language("dax")
+    except Exception:
+        pass
 
 
 def get_language_definition(language: str | None) -> LanguageDefinition | None:

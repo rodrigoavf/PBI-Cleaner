@@ -1,3 +1,5 @@
+import weakref
+
 from PyQt6.QtCore import Qt, QStringListModel
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QPlainTextEdit, QCompleter
@@ -15,6 +17,8 @@ class CodeEditor(QPlainTextEdit):
     - Typing word characters updates and filters suggestions
     - Popup hides on Enter/Tab/Escape and non-word characters
     """
+
+    _dax_editors: "weakref.WeakSet['CodeEditor']" = weakref.WeakSet()
 
     def __init__(self, parent=None, language: str | None = None, edit: bool = True):
         """Create a CodeEditor.
@@ -77,11 +81,18 @@ class CodeEditor(QPlainTextEdit):
     def language(self) -> str | None:
         return self._language
 
-    def set_language(self, language: str | None):
+    def set_language(self, language: str | None, *, force: bool = False):
         """Configure syntax support for the requested language."""
         requested = language.lower() if language else None
-        if requested == self._language:
+        if not force and requested == self._language:
             return
+
+        cls = self.__class__
+        if self._language == "dax":
+            try:
+                cls._dax_editors.discard(self)
+            except Exception:
+                pass
 
         # Tear down existing highlighter
         if self._highlighter:
@@ -128,11 +139,34 @@ class CodeEditor(QPlainTextEdit):
                     pass
             except Exception:
                 self._highlighter = None
+        else:
+            self._highlighter = None
+
         self._line_comment = definition.line_comment
+
+        if self._language == "dax":
+            try:
+                cls._dax_editors.add(self)
+            except Exception:
+                pass
 
     def set_function_names(self, names):
         """Override function names used for () auto-insertion."""
         self._function_names = {str(name).upper() for name in (names or [])}
+
+    @classmethod
+    def refresh_language(cls, language: str | None):
+        """Re-apply language configuration for all editors of the requested type."""
+        if not language or language.lower() != "dax":
+            return
+        # Snapshot to avoid mutation during iteration
+        for editor in list(cls._dax_editors):
+            if editor is None:
+                continue
+            try:
+                editor.set_language("dax", force=True)
+            except Exception:
+                pass
 
     def insertCompletion(self, *args):
         # Accept either (str) or (QModelIndex)
