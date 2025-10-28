@@ -242,8 +242,9 @@ class DAXHighlighter(QSyntaxHighlighter):
         # Numbers (ints/floats)
         self.re_number = QRegularExpression(r"\b[0-9]+(\.[0-9]+)?\b")
 
-        # Line comments //...
+        # Line comments //... and --...
         self.re_line_comment = QRegularExpression(r"//.*$")
+        self.re_line_comment_dash = QRegularExpression(r"--.*$")
 
         # Block comments /* ... */ (multi-line handled in highlightBlock via setCurrentBlockState)
         self.re_comment_start = QRegularExpression(r"/\*")
@@ -255,33 +256,37 @@ class DAXHighlighter(QSyntaxHighlighter):
 
         comment_spans: list[tuple[int, int]] = []
 
-        # Multi-line comments
-        if self.previousBlockState() != 1:
-            match = self.re_comment_start.match(text)
-            start_index = match.capturedStart() if match.hasMatch() else -1
-        else:
-            start_index = 0
-
-        while start_index >= 0:
-            end_match = self.re_comment_end.match(text, start_index)
-            end_index = end_match.capturedEnd() if end_match.hasMatch() else -1
+        text_len = len(text)
+        if self.previousBlockState() == 1:
+            end_index = text.find("*/")
             if end_index == -1:
+                comment_spans.append((0, text_len))
                 self.setCurrentBlockState(1)
-                length = len(text) - start_index
-                comment_spans.append((start_index, length))
-                break
+                start_index = -1
             else:
-                length = end_index - start_index
-                comment_spans.append((start_index, length))
-                next_match = self.re_comment_start.match(text, end_index)
-                start_index = next_match.capturedStart() if next_match.hasMatch() else -1
+                end_index += 2
+                comment_spans.append((0, end_index))
+                start_index = text.find("/*", end_index)
+        else:
+            start_index = text.find("/*")
 
-        if self.previousBlockState() == 1 and self.currentBlockState() != 1:
-            # we exited a block comment
-            self.setCurrentBlockState(0)
+        while start_index != -1:
+            end_index = text.find("*/", start_index + 2)
+            if end_index == -1:
+                comment_spans.append((start_index, text_len - start_index))
+                self.setCurrentBlockState(1)
+                break
+            end_index += 2
+            comment_spans.append((start_index, end_index - start_index))
+            start_index = text.find("/*", end_index)
 
         # Single line comment
         it = self.re_line_comment.globalMatch(text)
+        while it.hasNext():
+            m = it.next()
+            comment_spans.append((m.capturedStart(), m.capturedLength()))
+
+        it = self.re_line_comment_dash.globalMatch(text)
         while it.hasNext():
             m = it.next()
             comment_spans.append((m.capturedStart(), m.capturedLength()))
