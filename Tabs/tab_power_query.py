@@ -2,7 +2,7 @@ import ast
 import os
 import re
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -48,6 +48,9 @@ class PowerQueryTab(QWidget):
         self.ignore_editor_changes = False
         self._ignore_tree_changes = False
         self._ignore_item_change = False
+        self._loading_data = False
+        self.is_dirty = False
+        self.save_button: Optional[QPushButton] = None
         self.init_ui()
         if pbip_file:
             self.load_tables()
@@ -59,6 +62,10 @@ class PowerQueryTab(QWidget):
         main_layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
+        self.save_button = QPushButton("Save Changes")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self.save_changes)
+        top_bar.addWidget(self.save_button)
         self.refresh_button = QPushButton("🔄 Reload Metadata")
         self.refresh_button.setToolTip("Reload Power Query metadata from disk")
         self.refresh_button.clicked.connect(self.refresh_tables)
@@ -180,6 +187,10 @@ class PowerQueryTab(QWidget):
         self.setup_shortcuts()
 
     def setup_shortcuts(self):
+        self.save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.save_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.save_shortcut.activated.connect(self.save_changes)
+
         self.new_folder_shortcut = QShortcut(QKeySequence("Ctrl+N"), self.table_tree)
         self.new_folder_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         self.new_folder_shortcut.activated.connect(self._shortcut_create_folder)
@@ -195,6 +206,33 @@ class PowerQueryTab(QWidget):
         self.delete_folder_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.table_tree)
         self.delete_folder_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         self.delete_folder_shortcut.activated.connect(self.delete_selected_folders)
+
+    def _set_dirty(self, value: bool):
+        self.is_dirty = value
+        if self.save_button:
+            self.save_button.setEnabled(value)
+
+    def mark_dirty(self):
+        if self._loading_data:
+            return
+        self._set_dirty(True)
+
+    def _normalize_group_path(self, raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        text = raw.strip()
+        if (text.startswith("'") and text.endswith("'")) or (text.startswith('"') and text.endswith('"')):
+            text = text[1:-1]
+        text = re.sub(r"[\\/]+", "/", text)
+        parts = [part.strip() for part in text.split("/") if part.strip()]
+        return "/".join(parts) if parts else None
+
+    def _expand_group_path(self, path: str) -> List[str]:
+        parts = [p for p in path.split("/") if p]
+        expanded: List[str] = []
+        for idx in range(len(parts)):
+            expanded.append("/".join(parts[: idx + 1]))
+        return expanded
 
     def _shortcut_create_folder(self):
         current = self.table_tree.currentItem()
@@ -336,6 +374,7 @@ class PowerQueryTab(QWidget):
             )
             return
 
+        self._loading_data = True
         try:
             with open(model_tmdl, "r", encoding="utf-8") as f:
                 model_tmdl_data = f.read()
@@ -346,11 +385,20 @@ class PowerQueryTab(QWidget):
             else:
                 self.query_order = []
 
-            group_matches = re.findall(
-                r"queryGroup\s+(\w+)\s*\n\s*annotation\s+PBI_QueryGroupOrder\s*=\s*(\d+)",
-                model_tmdl_data,
+            group_pattern = re.compile(
+                r"(?mi)^\s*queryGroup\s+(?P<name>'[^']+'|\"[^\"]+\"|[^\s\r\n]+)\s*\r?\n\s*annotation\s+PBI_QueryGroupOrder\s*=\s*(?P<order>\d+)"
             )
-            self.query_groups = {name: int(order) for name, order in group_matches}
+            query_groups: Dict[str, int] = {}
+            for match in group_pattern.finditer(model_tmdl_data):
+                normalized = self._normalize_group_path(match.group("name"))
+                if not normalized:
+                    continue
+                order_value = int(match.group("order"))
+                if normalized in query_groups:
+                    query_groups[normalized] = min(query_groups[normalized], order_value)
+                else:
+                    query_groups[normalized] = order_value
+            self.query_groups = query_groups
 
             tables_data = {}
             for filename in os.listdir(tables_dir):
@@ -377,7 +425,7 @@ class PowerQueryTab(QWidget):
 
                 query_group_match = re.search(r'(?mi)^\s*queryGroup\s*:\s*([^\r\n]+)', tmdl_data) \
                     or re.search(r'(?mi)^\s*queryGroup\s+([^\r\n]+)', tmdl_data)
-                query_group = query_group_match.group(1).strip() if query_group_match else None
+                query_group = self._normalize_group_path(query_group_match.group(1)) if query_group_match else None
 
                 def unescape_quoted(s: str) -> str:
                     """Unescape quoted M code from TMDL text."""
@@ -484,9 +532,58 @@ class PowerQueryTab(QWidget):
 
             self.tables_data = tables_data
             self.populate_tree()
+            self._set_dirty(False)
 
         except Exception as exc:
             QMessageBox.critical(self, "Error", f"Failed to load tables:\n{exc}")
+        finally:
+            self._loading_data = False
+
+    def save_changes(self):
+        """Persist current tree layout back to the PBIP model files."""
+        if not self.pbip_file:
+            QMessageBox.information(self, "No PBIP", "Select a PBIP file to save changes.")
+            return
+
+        pbip_path = os.path.abspath(self.pbip_file)
+        if not os.path.isfile(pbip_path):
+            QMessageBox.warning(self, "Missing PBIP", f"PBIP file not found:\n{pbip_path}")
+            return
+
+        semantic_root = os.path.splitext(pbip_path)[0] + ".SemanticModel"
+        model_tmdl = os.path.join(semantic_root, "definition", "model.tmdl")
+        tables_dir = os.path.join(semantic_root, "definition", "tables")
+
+        if not os.path.isfile(model_tmdl) or not os.path.isdir(tables_dir):
+            QMessageBox.warning(
+                self,
+                "Missing Metadata",
+                "Could not locate model.tmdl or tables metadata for the selected PBIP file.",
+            )
+            return
+
+        try:
+            folder_paths, table_order, table_groups = self._collect_tree_layout()
+            self.query_groups = {path: idx for idx, path in enumerate(folder_paths)}
+            self.query_order = table_order
+
+            self._update_model_tmdl(model_tmdl, folder_paths, table_order)
+
+            for table_name, group_path in table_groups.items():
+                info = self.tables_data.get(table_name)
+                if not info:
+                    continue
+                if (info.get("table_type") or "").lower() == "calculated":
+                    continue
+                table_path = os.path.join(tables_dir, f"{table_name}.tmdl")
+                if not os.path.isfile(table_path):
+                    continue
+                self._update_table_definition(table_path, group_path)
+
+            self._set_dirty(False)
+            QMessageBox.information(self, "Success", "Changes saved successfully!")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to save changes:\n{exc}")
 
     def populate_tree(self):
         """Populate the tree view with tables and their columns."""
@@ -509,38 +606,97 @@ class PowerQueryTab(QWidget):
             sorted_tables = sorted(self.tables_data.keys(), key=str.casefold)
 
         group_map: dict[Optional[str], list[str]] = {}
-        for table_name in sorted_tables:
-            info = self.tables_data.get(table_name, {})
-            group_key = info.get("query_group") or None
-            group_map.setdefault(group_key, []).append(table_name)
-
-        if None not in group_map:
-            group_map[None] = []
+        all_group_paths: set[str] = set()
+        path_orders: Dict[str, float] = {}
 
         table_order = {name.lower(): idx for idx, name in enumerate(self.query_order)}
 
         def table_sort_key(name: str):
             return (table_order.get(name.lower(), len(table_order)), name.lower())
 
-        group_order_list = []
-        for group_key in group_map:
-            if group_key is None:
-                display_name = self.OTHER_QUERIES_NAME
-                group_order_list.append((1, float('inf'), display_name.lower(), group_key, display_name))
+        for table_name in sorted_tables:
+            info = self.tables_data.get(table_name, {})
+            group_key = info.get("query_group") or None
+            if group_key:
+                group_map.setdefault(group_key, []).append(table_name)
+                for expanded in self._expand_group_path(group_key):
+                    all_group_paths.add(expanded)
+                    if expanded not in path_orders:
+                        path_orders[expanded] = float("inf")
             else:
-                order_val = self.query_groups.get(group_key, float('inf'))
-                display_name = group_key
-                group_order_list.append((0, order_val, display_name.lower(), group_key, display_name))
-        group_order_list.sort()
+                group_map.setdefault(None, []).append(table_name)
 
-        for _, _, _, group_key, display_name in group_order_list:
-            group_item = self._create_folder_item(group_key, display_name)
-            self.table_tree.addTopLevelItem(group_item)
+        for path, order in self.query_groups.items():
+            if not path:
+                continue
+            for expanded in self._expand_group_path(path):
+                all_group_paths.add(expanded)
+                if expanded in path_orders:
+                    path_orders[expanded] = min(path_orders[expanded], order)
+                else:
+                    path_orders[expanded] = order
 
-            tables_in_group = sorted(group_map.get(group_key, []), key=table_sort_key)
+        folder_items: Dict[str, QTreeWidgetItem] = {}
+
+        def ensure_folder(path: Optional[str]) -> Optional[QTreeWidgetItem]:
+            if not path:
+                return None
+            if path in folder_items:
+                return folder_items[path]
+            parts = [p for p in path.split("/") if p]
+            if not parts:
+                return None
+            parent_path = "/".join(parts[:-1]) if len(parts) > 1 else None
+            parent_item = ensure_folder(parent_path) if parent_path else None
+            display_name = parts[-1]
+            item = self._create_folder_item(path, display_name)
+            folder_items[path] = item
+            if parent_item:
+                parent_item.addChild(item)
+            return item
+
+        top_level_paths = {path.split("/")[0] for path in all_group_paths if path}
+        top_level_orders: Dict[str, float] = {}
+        for path, order in path_orders.items():
+            if not path:
+                continue
+            top_segment = path.split("/")[0]
+            current = top_level_orders.get(top_segment)
+            if current is None or order < current:
+                top_level_orders[top_segment] = order
+
+        ordered_top_level = sorted(
+            top_level_paths,
+            key=lambda name: (top_level_orders.get(name, float("inf")), name.lower()),
+        )
+
+        for path in sorted(all_group_paths, key=lambda p: (path_orders.get(p, float("inf")), p.lower())):
+            ensure_folder(path)
+
+        for top_path in ordered_top_level:
+            folder_item = ensure_folder(top_path)
+            if folder_item:
+                self.table_tree.addTopLevelItem(folder_item)
+
+        for group_key, tables in group_map.items():
+            if group_key is None:
+                continue
+            folder_item = ensure_folder(group_key)
+            if not folder_item:
+                continue
+            tables_in_group = sorted(tables, key=table_sort_key)
             for table_name in tables_in_group:
                 table_item = self._create_table_item(table_name, group_key)
-                group_item.addChild(table_item)
+                folder_item.addChild(table_item)
+
+        other_tables = sorted(group_map.get(None, []), key=table_sort_key)
+        if other_tables:
+            other_item = self.ensure_other_queries_folder()
+            for table_name in other_tables:
+                table_item = self._create_table_item(table_name, None)
+                other_item.addChild(table_item)
+        else:
+            self.ensure_other_queries_folder()
 
         self.table_tree.blockSignals(False)
         self.ensure_other_queries_last()
@@ -622,6 +778,7 @@ class PowerQueryTab(QWidget):
             return
         self.tables_data[self.current_table]["code_text"] = self.query_editor.toPlainText()
         self.tables_data[self.current_table]["code_language"] = (self.query_editor.language() or "").lower()
+        self.mark_dirty()
 
     def on_import_mode_changed(self, index: int):
         """Persist import mode changes to in-memory state."""
@@ -629,6 +786,7 @@ class PowerQueryTab(QWidget):
             return
         value = self.import_mode_combo.itemData(index)
         self.tables_data[self.current_table]["import_mode"] = value if value else None
+        self.mark_dirty()
 
     def clear_details(self):
         """Reset detail pane and selection state."""
@@ -732,8 +890,10 @@ class PowerQueryTab(QWidget):
             self.delete_folder(item)
 
     def create_new_folder(self, parent_folder: Optional[QTreeWidgetItem] = None):
-        name = self.generate_unique_folder_name("New Folder")
-        folder_item = self._create_folder_item(name, name)
+        name = self.generate_unique_folder_name("New Folder", parent_folder)
+        parent_path = parent_folder.data(0, self.KEY_ROLE) if parent_folder else None
+        full_path = f"{parent_path}/{name}" if parent_path else name
+        folder_item = self._create_folder_item(full_path, name)
         # If a parent folder is provided, add as a child (nested folder).
         if parent_folder is not None:
             parent_folder.addChild(folder_item)
@@ -745,8 +905,6 @@ class PowerQueryTab(QWidget):
                 self.table_tree.insertTopLevelItem(idx, folder_item)
             else:
                 self.table_tree.addTopLevelItem(folder_item)
-        max_order = max(self.query_groups.values(), default=-1)
-        self.query_groups[name] = max_order + 1
         self.table_tree.setCurrentItem(folder_item)
         self.table_tree.editItem(folder_item)
         self.on_tree_structure_changed()
@@ -781,9 +939,27 @@ class PowerQueryTab(QWidget):
         self.ensure_other_queries_last()
         self.on_tree_structure_changed()
 
-    def generate_unique_folder_name(self, base: str) -> str:
-        existing = {self.table_tree.topLevelItem(i).text(0).lower() for i in range(self.table_tree.topLevelItemCount())}
-        existing.add(self.OTHER_QUERIES_NAME.lower())
+    def generate_unique_folder_name(self, base: str, parent: Optional[QTreeWidgetItem] = None) -> str:
+        existing: set[str] = set()
+        if parent is None:
+            for i in range(self.table_tree.topLevelItemCount()):
+                item = self.table_tree.topLevelItem(i)
+                if item.data(0, self.TYPE_ROLE) != self.ITEM_FOLDER:
+                    continue
+                key = item.data(0, self.KEY_ROLE)
+                if key is None:
+                    continue
+                existing.add(item.text(0).strip().lower())
+            existing.add(self.OTHER_QUERIES_NAME.lower())
+        else:
+            for i in range(parent.childCount()):
+                child = parent.child(i)
+                if child.data(0, self.TYPE_ROLE) != self.ITEM_FOLDER:
+                    continue
+                key = child.data(0, self.KEY_ROLE)
+                if key is None:
+                    continue
+                existing.add(child.text(0).strip().lower())
         candidate = base
         suffix = 1
         while candidate.lower() in existing:
@@ -808,30 +984,107 @@ class PowerQueryTab(QWidget):
             item.setText(0, folder_key)
             self._ignore_item_change = False
             return
-        # Ensure uniqueness
-        for i in range(self.table_tree.topLevelItemCount()):
-            other = self.table_tree.topLevelItem(i)
-            if other is item:
+        if new_name == (folder_key.split("/")[-1] if folder_key else ""):
+            return
+        parent_item = item.parent()
+        parent_key = parent_item.data(0, self.KEY_ROLE) if parent_item else None
+        siblings = (
+            [parent_item.child(i) for i in range(parent_item.childCount())] if parent_item
+            else [self.table_tree.topLevelItem(i) for i in range(self.table_tree.topLevelItemCount())]
+        )
+        for sibling in siblings:
+            if sibling is item:
                 continue
-            if other.text(0).strip().lower() == new_name.lower():
+            if sibling.data(0, self.TYPE_ROLE) != self.ITEM_FOLDER:
+                continue
+            sibling_key = sibling.data(0, self.KEY_ROLE)
+            if sibling_key is None:
+                continue
+            if sibling.text(0).strip().lower() == new_name.lower():
                 self._ignore_item_change = True
-                item.setText(0, folder_key)
+                item.setText(0, folder_key.split("/")[-1] if folder_key else new_name)
                 self._ignore_item_change = False
                 return
-        if new_name == folder_key:
-            return
+        new_key = f"{parent_key}/{new_name}" if parent_key else new_name
         self._ignore_item_change = True
         item.setText(0, new_name)
-        item.setData(0, self.KEY_ROLE, new_name)
+        item.setData(0, self.KEY_ROLE, new_key)
         self._ignore_item_change = False
-        order_val = self.query_groups.pop(folder_key, len(self.query_groups))
-        self.query_groups[new_name] = order_val
         self.on_tree_structure_changed()
+
+    def _collect_tree_layout(self) -> Tuple[List[str], List[str], Dict[str, Optional[str]]]:
+        """Traverse the tree to gather folder paths, table order, and group assignments."""
+        folder_paths: List[str] = []
+        table_order: List[str] = []
+        table_groups: Dict[str, Optional[str]] = {}
+
+        def traverse_folder(folder_item: QTreeWidgetItem, parent_parts: List[str]) -> None:
+            name = folder_item.text(0).strip()
+            is_other_queries = folder_item.data(0, self.KEY_ROLE) is None
+            working_parts = parent_parts
+            if is_other_queries:
+                folder_item.setData(0, self.KEY_ROLE, None)
+                working_parts = []
+            else:
+                working_parts = parent_parts + [name] if name else parent_parts.copy()
+                path_value = "/".join(working_parts) if working_parts else name
+                if path_value:
+                    folder_paths.append(path_value)
+                    folder_item.setData(0, self.KEY_ROLE, path_value)
+                else:
+                    folder_item.setData(0, self.KEY_ROLE, None)
+
+            for child_index in range(folder_item.childCount()):
+                child = folder_item.child(child_index)
+                child_type = child.data(0, self.TYPE_ROLE)
+                if child_type == self.ITEM_FOLDER:
+                    traverse_folder(child, working_parts)
+                elif child_type == self.ITEM_TABLE:
+                    table_name = child.data(0, Qt.ItemDataRole.UserRole) or child.text(0).strip()
+                    group_path = "/".join(working_parts) if working_parts else None
+                    table_groups[table_name] = group_path
+                    child.setData(0, self.KEY_ROLE, group_path)
+                    info = self.tables_data.get(table_name)
+                    table_type = ""
+                    if info is not None:
+                        info["query_group"] = group_path
+                        table_type = (info.get("table_type") or "").lower()
+                    self.ensure_columns_sorted(child)
+                    for cc in range(child.childCount()):
+                        col = child.child(cc)
+                        if col.data(0, self.TYPE_ROLE) == self.ITEM_COLUMN:
+                            col.setData(0, Qt.ItemDataRole.UserRole, table_name)
+                    if table_type != "calculated":
+                        table_order.append(table_name)
+
+        for top_index in range(self.table_tree.topLevelItemCount()):
+            top_item = self.table_tree.topLevelItem(top_index)
+            item_type = top_item.data(0, self.TYPE_ROLE)
+            if item_type == self.ITEM_FOLDER:
+                traverse_folder(top_item, [])
+            elif item_type == self.ITEM_TABLE:
+                table_name = top_item.data(0, Qt.ItemDataRole.UserRole) or top_item.text(0).strip()
+                table_groups[table_name] = None
+                info = self.tables_data.get(table_name)
+                table_type = ""
+                if info is not None:
+                    info["query_group"] = None
+                    table_type = (info.get("table_type") or "").lower()
+                self.ensure_columns_sorted(top_item)
+                for cc in range(top_item.childCount()):
+                    col = top_item.child(cc)
+                    if col.data(0, self.TYPE_ROLE) == self.ITEM_COLUMN:
+                        col.setData(0, Qt.ItemDataRole.UserRole, table_name)
+                if table_type != "calculated":
+                    table_order.append(table_name)
+
+        return folder_paths, table_order, table_groups
 
     def on_tree_structure_changed(self, *args, **kwargs):
         if self._ignore_tree_changes:
             return
         self._ignore_tree_changes = True
+        changed = False
         try:
             current_item = self.table_tree.currentItem()
             self.ensure_other_queries_last()
@@ -880,39 +1133,156 @@ class PowerQueryTab(QWidget):
 
             self.ensure_other_queries_last()
 
-            new_group_order: dict[str, int] = {}
-            order = 0
-            for idx in range(self.table_tree.topLevelItemCount()):
-                folder = self.table_tree.topLevelItem(idx)
-                folder_key = folder.data(0, self.KEY_ROLE)
-                if folder_key is not None:
-                    new_group_order[folder_key] = order
-                    order += 1
-                # Walk recursively to update any tables under this folder
-                def _update_tables_in_folder(folder_item: QTreeWidgetItem, current_group_key: Optional[str]):
-                    for cidx in range(folder_item.childCount()):
-                        child = folder_item.child(cidx)
-                        ctype = child.data(0, self.TYPE_ROLE)
-                        if ctype == self.ITEM_TABLE:
-                            table_name = child.data(0, Qt.ItemDataRole.UserRole)
-                            self.tables_data[table_name]["query_group"] = current_group_key
-                            child.setData(0, self.KEY_ROLE, current_group_key)
-                            self.ensure_columns_sorted(child)
-                            # Columns: ensure they carry table name data
-                            for cc in range(child.childCount()):
-                                col = child.child(cc)
-                                if col.data(0, self.TYPE_ROLE) == self.ITEM_COLUMN:
-                                    col.setData(0, Qt.ItemDataRole.UserRole, table_name)
-                        elif ctype == self.ITEM_FOLDER:
-                            # Recurse into nested folder preserving its own key for its tables
-                            _update_tables_in_folder(child, child.data(0, self.KEY_ROLE))
+            previous_order = list(self.query_order)
+            previous_groups = dict(self.query_groups)
+            previous_table_groups = {name: data.get("query_group") for name, data in self.tables_data.items()}
 
-                _update_tables_in_folder(folder, folder_key)
-            self.query_groups = new_group_order
+            folder_paths, table_order, table_groups = self._collect_tree_layout()
+            new_query_groups = {path: idx for idx, path in enumerate(folder_paths)}
+
+            table_group_changed = any(
+                previous_table_groups.get(name) != table_groups.get(name)
+                for name in set(previous_table_groups.keys()) | set(table_groups.keys())
+            )
+
+            changed = (
+                table_order != previous_order
+                or new_query_groups != previous_groups
+                or table_group_changed
+            )
+
+            self.query_groups = new_query_groups
+            self.query_order = table_order
+
             if current_item:
                 self.table_tree.setCurrentItem(current_item)
         finally:
             self._ignore_tree_changes = False
+        if changed:
+            self.mark_dirty()
+
+    def _update_model_tmdl(self, model_path: str, folder_paths: List[str], table_order: List[str]) -> None:
+        with open(model_path, "r", encoding="utf-8", newline="") as f:
+            original_text = f.read()
+
+        newline = "\r\n" if "\r\n" in original_text else "\n"
+
+        group_pattern = re.compile(
+            r'(?m)^(?P<indent>[ \t]*)queryGroup\s+(?:\'[^\']*\'|"[^"]*"|[^\s\r\n]+)\s*\r?\n(?P<anno_indent>[ \t]*)annotation\s+PBI_QueryGroupOrder\s*=\s*\d+\s*\r?\n?'
+        )
+        first_group = group_pattern.search(original_text)
+        group_indent = first_group.group("indent") if first_group else None
+        annotation_indent = first_group.group("anno_indent") if first_group else None
+
+        text = group_pattern.sub("", original_text)
+
+        order_pattern = re.compile(r"(annotation\s+PBI_QueryOrder\s*=\s*)(\[.*?\])", re.DOTALL)
+        order_match = order_pattern.search(text)
+        if not order_match:
+            raise ValueError("annotation PBI_QueryOrder not found in model.tmdl")
+
+        order_start = order_match.start()
+        order_end = order_match.end()
+        order_prefix = order_match.group(1)
+
+        line_start = text.rfind("\n", 0, order_start)
+        if line_start == -1:
+            line_start = 0
+        else:
+            line_start += 1
+        order_indent = text[line_start:order_start]
+        indent_unit = "\t" if "\t" in order_indent else "    "
+
+        if group_indent is None:
+            group_indent = order_indent
+        if annotation_indent is None:
+            annotation_indent = group_indent + indent_unit
+
+        if table_order:
+            item_indent = order_indent + indent_unit
+            items = [f'{item_indent}"{name}"' for name in table_order]
+            new_list_repr = "[" + newline + (newline.join(items)) + newline + order_indent + "]"
+        else:
+            new_list_repr = "[]"
+        updated_order_block = order_prefix + new_list_repr
+
+        before_order = text[:order_start]
+        after_order = text[order_end:]
+
+        if folder_paths:
+            group_lines = []
+            for idx, path in enumerate(folder_paths):
+                group_lines.append(f"{group_indent}queryGroup '{path}'")
+                group_lines.append(f"{annotation_indent}annotation PBI_QueryGroupOrder = {idx}")
+            group_block = newline.join(group_lines) + newline
+        else:
+            group_block = ""
+
+        if group_block and before_order and not before_order.endswith(("\n", "\r")):
+            before_order += newline
+
+        new_text = before_order + group_block + updated_order_block + after_order
+
+        if new_text != original_text:
+            with open(model_path, "w", encoding="utf-8", newline="") as f:
+                f.write(new_text)
+
+    def _update_table_definition(self, table_path: str, group_path: Optional[str]) -> None:
+        with open(table_path, "r", encoding="utf-8", newline="") as f:
+            lines = f.readlines()
+
+        if not lines:
+            return
+
+        line_ending = "\n"
+        for line in lines:
+            if line.endswith("\r\n"):
+                line_ending = "\r\n"
+                break
+            if line.endswith("\n"):
+                line_ending = "\n"
+                break
+
+        mode_idx = None
+        mode_indent = ""
+        query_idx = None
+        query_indent = ""
+
+        for idx, line in enumerate(lines):
+            stripped = line.lstrip()
+            if mode_idx is None and re.match(r"mode\s*:", stripped, re.IGNORECASE):
+                mode_idx = idx
+                mode_indent = line[: len(line) - len(stripped)]
+            if query_idx is None and re.match(r"querygroup\b", stripped, re.IGNORECASE):
+                query_idx = idx
+                query_indent = line[: len(line) - len(stripped)]
+
+        if mode_idx is None:
+            return
+
+        changed = False
+
+        if group_path is None:
+            if query_idx is not None:
+                del lines[query_idx]
+                changed = True
+                if query_idx < len(lines) and not lines[query_idx].strip():
+                    del lines[query_idx]
+        else:
+            target_indent = query_indent or mode_indent
+            new_line = f"{target_indent}queryGroup: '{group_path}'{line_ending}"
+            if query_idx is not None:
+                if lines[query_idx] != new_line:
+                    lines[query_idx] = new_line
+                    changed = True
+            else:
+                insert_idx = mode_idx + 1
+                lines.insert(insert_idx, new_line)
+                changed = True
+
+        if changed:
+            with open(table_path, "w", encoding="utf-8", newline="") as f:
+                f.writelines(lines)
 
     def _create_folder_item(self, group_key: Optional[str], display_name: str) -> QTreeWidgetItem:
         folder_item = QTreeWidgetItem([display_name])
