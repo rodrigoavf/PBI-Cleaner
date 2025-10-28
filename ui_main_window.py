@@ -22,6 +22,7 @@ from PyQt6.QtCore import Qt, QTimer, QPointF
 from PyQt6.QtGui import QPixmap, QAction, QActionGroup, QPainter, QColor, QPen, QPalette
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
+from Tabs.tab_dax_writer import DAXWriterTab
 from Tabs.tab_tables_elements import PowerQueryTab
 from Tabs.tab_bookmarks import TabBookmarks
 from common_functions import apply_theme, THEME_PRESETS
@@ -455,7 +456,7 @@ class MainWindow(QMainWindow):
             tabs = QTabWidget()
             dax_queries_tab = DAXQueryTab(self.pbip_path)
             bookmarks_tab = TabBookmarks(self.pbip_path)
-            dax_writer_tab = QWidget()
+            dax_writer_tab = DAXWriterTab(self.pbip_path)
             tables_tab = PowerQueryTab(self.pbip_path)
             search_tab = FileSearchApp(self.pbip_path)
 

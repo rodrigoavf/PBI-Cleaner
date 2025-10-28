@@ -675,6 +675,11 @@ def set_dax_model_identifiers(
         pass
 
 
+def get_dax_model_identifiers() -> tuple[list[str], list[str]]:
+    """Return copies of the current DAX model tables and columns lists."""
+    return list(DAX_MODEL_TABLES), list(DAX_MODEL_COLUMNS)
+
+
 def get_language_definition(language: str | None) -> LanguageDefinition | None:
     """Return the language definition for the given key, if available."""
     if not language:
