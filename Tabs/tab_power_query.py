@@ -1199,9 +1199,7 @@ class PowerQueryTab(QWidget):
             annotation_indent = group_indent + indent_unit
 
         if table_order:
-            item_indent = order_indent + indent_unit
-            items = [f'{item_indent}"{name}"' for name in table_order]
-            new_list_repr = "[" + newline + (newline.join(items)) + newline + order_indent + "]"
+            new_list_repr = "[" + ",".join(f'"{name}"' for name in table_order) + "]"
         else:
             new_list_repr = "[]"
         updated_order_block = order_prefix + new_list_repr
