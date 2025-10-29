@@ -19,24 +19,27 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from Coding.code_editor import CodeEditor
-from Coding.code_editor_support import set_dax_model_identifiers
+from Coding.code_editor_support import DAXHighlighter, set_dax_model_identifiers
 from common_functions import code_editor_font
 
 
-class TableColumnHighlighter(QSyntaxHighlighter):
-    """Custom highlighter that only colors table and column references."""
+class _TableColumnHighlightMixin:
+    """Mixin providing shared formatting for table and column references."""
 
-    def __init__(self, document):
-        super().__init__(document)
+    def _init_table_column_support(self):
         self._table_patterns: List[re.Pattern] = []
         self._column_patterns: List[re.Pattern] = []
 
@@ -57,7 +60,7 @@ class TableColumnHighlighter(QSyntaxHighlighter):
         self._column_patterns = column_patterns
         self.rehighlight()
 
-    def highlightBlock(self, text: str) -> None:
+    def _apply_table_column_highlighting(self, text: str) -> None:
         for pattern in self._table_patterns:
             for match in pattern.finditer(text):
                 start, end = match.span()
@@ -67,6 +70,29 @@ class TableColumnHighlighter(QSyntaxHighlighter):
             for match in pattern.finditer(text):
                 start, end = match.span()
                 self.setFormat(start, end - start, self._column_format)
+
+
+class TableColumnHighlighter(_TableColumnHighlightMixin, QSyntaxHighlighter):
+    """Custom highlighter that only colors table and column references."""
+
+    def __init__(self, document):
+        QSyntaxHighlighter.__init__(self, document)
+        self._init_table_column_support()
+
+    def highlightBlock(self, text: str) -> None:
+        self._apply_table_column_highlighting(text)
+
+
+class DAXTableColumnHighlighter(_TableColumnHighlightMixin, DAXHighlighter):
+    """DAX syntax highlighter extended with table/column coloring."""
+
+    def __init__(self, document):
+        DAXHighlighter.__init__(self, document)
+        self._init_table_column_support()
+
+    def highlightBlock(self, text: str) -> None:
+        super().highlightBlock(text)
+        self._apply_table_column_highlighting(text)
 
 
 class ChatRequestSignals(QObject):
@@ -217,6 +243,7 @@ class DAXWriterTab(QWidget):
 
         self.prompt_editor: Optional[CodeEditor] = None
         self.output_editor: Optional[CodeEditor] = None
+        self.table_tree: Optional[QTreeWidget] = None
         self.generate_button: Optional[QPushButton] = None
         self.copy_button: Optional[QPushButton] = None
         self.count_label: Optional[QLabel] = None
@@ -224,6 +251,7 @@ class DAXWriterTab(QWidget):
         self.prompt_highlighter: Optional[TableColumnHighlighter] = None
         self.output_highlighter: Optional[TableColumnHighlighter] = None
         self._column_highlight_patterns: List[re.Pattern] = []
+        self._selected_table: Optional[str] = None
 
         self._building_metadata = False
 
@@ -272,12 +300,42 @@ class DAXWriterTab(QWidget):
         output_header.addWidget(self.copy_button)
         main_layout.addLayout(output_header)
 
-        self.output_editor = CodeEditor(edit=False)
+        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
+        bottom_splitter.setChildrenCollapsible(False)
+
+        tables_container = QWidget()
+        tables_layout = QVBoxLayout(tables_container)
+        tables_layout.setContentsMargins(0, 0, 6, 0)
+        tables_layout.setSpacing(4)
+
+        tables_layout.addWidget(QLabel("Tables"))
+
+        self.table_tree = QTreeWidget()
+        self.table_tree.setHeaderHidden(True)
+        self.table_tree.setRootIsDecorated(False)
+        self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table_tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table_tree.itemSelectionChanged.connect(self._on_table_selection_changed)
+        tables_layout.addWidget(self.table_tree)
+
+        bottom_splitter.addWidget(tables_container)
+
+        editor_container = QWidget()
+        editor_layout = QVBoxLayout(editor_container)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.setSpacing(0)
+
+        self.output_editor = CodeEditor()
         self.output_editor.setFont(code_editor_font())
-        self.output_editor.setReadOnly(True)
-        self.output_editor.setUndoRedoEnabled(False)
         self._prepare_editor(self.output_editor, editable=False)
-        main_layout.addWidget(self.output_editor)
+        editor_layout.addWidget(self.output_editor)
+
+        bottom_splitter.addWidget(editor_container)
+        bottom_splitter.setStretchFactor(0, 0)
+        bottom_splitter.setStretchFactor(1, 1)
+        bottom_splitter.setSizes([220, 580])
+
+        main_layout.addWidget(bottom_splitter)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #888888;")
@@ -305,7 +363,16 @@ class DAXWriterTab(QWidget):
                 pass
             editor._highlighter = None
 
-        highlighter = TableColumnHighlighter(editor.document())
+        if editable:
+            highlighter_cls = TableColumnHighlighter
+        else:
+            try:
+                editor.set_language("dax", force=True, enable_highlighter=False)
+            except Exception:
+                pass
+            highlighter_cls = DAXTableColumnHighlighter
+
+        highlighter = highlighter_cls(editor.document())
         if editable:
             self.prompt_highlighter = highlighter
         else:
@@ -327,6 +394,7 @@ class DAXWriterTab(QWidget):
             self._build_patterns()
             self._update_highlighters()
             self._update_autocomplete()
+            self._update_table_tree()
             self._on_prompt_changed()
 
             table_count = len(tables)
@@ -339,6 +407,7 @@ class DAXWriterTab(QWidget):
             self.table_patterns = []
             self.column_patterns = []
             self._update_highlighters()
+            self._update_table_tree()
             self.status_label.setText(f"Metadata load failed: {exc}")
         finally:
             self._building_metadata = False
@@ -423,6 +492,34 @@ class DAXWriterTab(QWidget):
         if self.output_highlighter:
             self.output_highlighter.update_patterns(table_regexes, column_regexes)
 
+    def _update_table_tree(self):
+        if not self.table_tree:
+            return
+
+        previous = self._selected_table
+        self.table_tree.blockSignals(True)
+        self.table_tree.clear()
+
+        tables = sorted(self.tables_data.keys(), key=str.casefold)
+        selected_item: Optional[QTreeWidgetItem] = None
+
+        for table in tables:
+            item = QTreeWidgetItem([table])
+            self.table_tree.addTopLevelItem(item)
+            if table == previous:
+                selected_item = item
+
+        if selected_item:
+            self.table_tree.setCurrentItem(selected_item)
+            self._selected_table = selected_item.text(0)
+        else:
+            self._selected_table = None
+
+        if self.table_tree.topLevelItemCount():
+            self.table_tree.resizeColumnToContents(0)
+
+        self.table_tree.blockSignals(False)
+
     @staticmethod
     def _table_autocomplete_forms(table: str) -> List[str]:
         forms = [table]
@@ -484,6 +581,16 @@ class DAXWriterTab(QWidget):
             f"Tables mentioned: {len(tables_found)}  Columns mentioned: {len(columns_found)}"
         )
 
+    def _on_table_selection_changed(self):
+        if not self.table_tree:
+            return
+        selected = self.table_tree.selectedItems()
+        if selected:
+            table_name = selected[0].text(0)
+            self._selected_table = table_name
+        else:
+            self._selected_table = None
+
     def _count_mentions(self, text: str) -> Tuple[Set[str], Set[Tuple[str, str]]]:
         mentioned_tables: Set[str] = set()
         mentioned_columns: Set[Tuple[str, str]] = set()
@@ -529,8 +636,10 @@ class DAXWriterTab(QWidget):
             return
 
         final_prompt = (
-            "I am a robot and I expect you to answer with a DAX code and absolutely nothing else, "
-            "I repeat ABSOLUTELY NOTHING BUT THE DAX CODE for Power BI.\n"
+            "Follow this instructions to the letter.\n"
+            "Give your answer with a DAX code for Power BI and absolutely nothing else.\n"
+            "The DAX code should be properly formatted and indented to be readable and easy to copy and paste.\n"
+            "The DAX code should contain simple comments. The very first line of the code must not be a comment.\n"
             "Build a DAX measure that:\n"
             f"{text}"
         )
