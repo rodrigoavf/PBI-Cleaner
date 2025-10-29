@@ -1,4 +1,3 @@
-import ast
 import os
 import re
 from collections import defaultdict
@@ -26,7 +25,7 @@ from PyQt6.QtGui import (
 )
 from Coding.code_editor import CodeEditor
 from Coding.code_editor_support import set_dax_model_identifiers
-from common_functions import code_editor_font, APP_THEME
+from common_functions import code_editor_font, APP_THEME, PBIPProject, load_pbip_project
 
 
 class PowerQueryTab(QWidget):
@@ -39,9 +38,10 @@ class PowerQueryTab(QWidget):
     ITEM_COLUMN = "column"
     OTHER_QUERIES_NAME = "Other Queries"
 
-    def __init__(self, pbip_file: Optional[str] = None):
+    def __init__(self, project: Optional[PBIPProject] = None, pbip_file: Optional[str] = None):
         super().__init__()
-        self.pbip_file = pbip_file
+        self.project = project
+        self.pbip_file = str(project.pbip_path) if project else pbip_file
         self.tables_data: Dict[str, Dict[str, Optional[str]]] = {}
         self.query_order = []
         self.query_groups = {}
@@ -53,7 +53,13 @@ class PowerQueryTab(QWidget):
         self.is_dirty = False
         self.save_button: Optional[QPushButton] = None
         self.init_ui()
-        if pbip_file:
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception:
+                self.project = None
+        if self.project or self.pbip_file:
             self.load_tables()
 
     def init_ui(self):
@@ -383,201 +389,66 @@ class PowerQueryTab(QWidget):
         )
         if not chosen:
             return
-        self.pbip_file = chosen
+        try:
+            self.project = load_pbip_project(chosen, force_reload=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Failed to Load", f"Could not load PBIP project:\n{exc}")
+            return
+        self.pbip_file = str(self.project.pbip_path)
         self.load_tables()
 
     def refresh_tables(self):
         """Reload tables using the current PBIP file."""
+        if self.project:
+            self.project.reload_tables()
+        elif self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file, force_reload=True)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Reload Failed", f"Could not reload PBIP project:\n{exc}")
+                return
         self.load_tables()
 
     def load_tables(self):
         """Extract tables, columns, and related metadata from the PBIP definition."""
         self.clear_details()
 
-        if not self.pbip_file:
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Load Failed", f"Unable to load PBIP project:\n{exc}")
+                return
+
+        if not self.project:
             QMessageBox.information(self, "No PBIP", "Select a PBIP file to load Power Query metadata.")
-            return
-
-        pbip_path = os.path.abspath(self.pbip_file)
-        if not os.path.isfile(pbip_path):
-            QMessageBox.warning(self, "Missing PBIP", f"PBIP file not found:\n{pbip_path}")
-            return
-
-        semantic_root = os.path.splitext(pbip_path)[0] + ".SemanticModel"
-        model_tmdl = os.path.join(semantic_root, "definition", "model.tmdl")
-        tables_dir = os.path.join(semantic_root, "definition", "tables")
-
-        if not os.path.isfile(model_tmdl) or not os.path.isdir(tables_dir):
-            QMessageBox.warning(
-                self,
-                "Missing Metadata",
-                "Could not locate model.tmdl or tables metadata for the selected PBIP file.",
-            )
             return
 
         self._loading_data = True
         try:
-            with open(model_tmdl, "r", encoding="utf-8") as f:
-                model_tmdl_data = f.read()
-
-            order_match = re.search(r"annotation\s+PBI_QueryOrder\s*=\s*(\[.*?\])", model_tmdl_data, re.DOTALL)
-            if order_match:
-                self.query_order = ast.literal_eval(order_match.group(1))
-            else:
-                self.query_order = []
-
-            group_pattern = re.compile(
-                r"(?mi)^\s*queryGroup\s+(?P<name>'[^']+'|\"[^\"]+\"|[^\s\r\n]+)\s*\r?\n\s*annotation\s+PBI_QueryGroupOrder\s*=\s*(?P<order>\d+)"
-            )
-            query_groups: Dict[str, int] = {}
-            for match in group_pattern.finditer(model_tmdl_data):
-                normalized = self._normalize_group_path(match.group("name"))
-                if not normalized:
-                    continue
-                order_value = int(match.group("order"))
-                if normalized in query_groups:
-                    query_groups[normalized] = min(query_groups[normalized], order_value)
-                else:
-                    query_groups[normalized] = order_value
-            self.query_groups = query_groups
-
-            tables_data = {}
-            for filename in os.listdir(tables_dir):
-                if not filename.endswith(".tmdl"):
-                    continue
-
-                table_name = os.path.splitext(filename)[0]
-                table_path = os.path.join(tables_dir, filename)
-                with open(table_path, "r", encoding="utf-8") as table_file:
-                    tmdl_data = table_file.read()
-
-                columns = re.findall(r'(?mi)^\s*column\s+([A-Za-z0-9_]+)\s*$', tmdl_data)
-
-                mode_match = re.search(r'(?mi)^\s*mode\s*:\s*([^\r\n]+)', tmdl_data)
-                mode = mode_match.group(1).strip() if mode_match else (
-                    re.search(r'(?mi)^\s*annotation\s+PBI_DataMode\s*=\s*"?(.*?)"?\s*$', tmdl_data).group(1).strip()
-                    if re.search(r'(?mi)^\s*annotation\s+PBI_DataMode', tmdl_data) else None
+            metadata = self.project.get_power_query_metadata()
+            if metadata.error:
+                QMessageBox.warning(
+                    self,
+                    "Metadata Error",
+                    f"Could not load Power Query metadata:\n{metadata.error}",
                 )
-                mode = mode.lower() if mode else None
+                self.tables_data = {}
+                self.query_order = []
+                self.query_groups = {}
+                self.populate_tree()
+                self._set_dirty(False)
+                return
 
-                table_type_match = r'(?mi)^\s*partition\s+([A-Za-z0-9_-]+)\s*=\s*(m|calculated)\s*$'
-                table_type = re.search(table_type_match, tmdl_data)
-                table_type_value = table_type.group(2).lower() if table_type else "m"
+            self.tables_data = metadata.tables
+            self.query_order = metadata.query_order
+            self.query_groups = metadata.query_groups
 
-                query_group_match = re.search(r'(?mi)^\s*queryGroup\s*:\s*([^\r\n]+)', tmdl_data) \
-                    or re.search(r'(?mi)^\s*queryGroup\s+([^\r\n]+)', tmdl_data)
-                query_group = self._normalize_group_path(query_group_match.group(1)) if query_group_match else None
-
-                def unescape_quoted(s: str) -> str:
-                    """Unescape quoted M code from TMDL text."""
-                    return s.encode('utf-8').decode('unicode_escape')
-
-                def _strip_any_fence(text: str) -> str:
-                    """Remove ``` or ´´´ fences (with or without language specifier)."""
-                    if not text:
-                        return text
-
-                    t = text.strip()
-
-                    # Multiline fences: ```lang\n ... \n```  or  ´´´lang\n ... \n´´´
-                    m = re.match(r'^\s*([`´])\1\1[^\r\n]*\r?\n([\s\S]*?)\r?\n\1\1\1\s*$', t)
-                    if m:
-                        return m.group(2).strip()
-
-                    # Single-line fences: ```code```  or  ´´´code´´´
-                    m = re.match(r'^\s*([`´])\1\1[^\r\n]*\s*([\s\S]*?)\s*\1\1\1\s*$', t)
-                    if m:
-                        return m.group(2).strip()
-
-                    return t
-                
-                def extract_table_code(tmdl_text: str):
-                    """Extract the M (Power Query) code block from a .tmdl section."""
-
-                    # --- Step 1: normalize indentation before extraction ---
-                    # Convert every 4 spaces to a single tab for consistency
-                    tmdl_text = tmdl_text.replace("    ", "\t")
-
-                    # --- Step 2: normal extraction logic ---
-                    # A) Quoted expression form: expression = "let\n...."
-                    mq = re.search(r'(?ms)^\s*expression\s*=\s*"((?:[^"\\]|\\.)*)"', tmdl_text)
-                    if mq:
-                        return unescape_quoted(mq.group(1)).strip()
-
-                    # B) Indented block after a standalone "source =" line
-                    src = re.search(r'(?m)^\s*source\s*=\s*$', tmdl_text)
-                    if not src:
-                        # Fallback: inline source = <content> ... up to next annotation or EOF
-                        m_inline = re.search(r'(?ms)^\s*source\s*=\s*(.+?)(?=^\s*annotation\b|^\S|\Z)', tmdl_text)
-                        result = m_inline.group(1).rstrip() if m_inline else None
-                        if result:
-                            # Remove first 4 spaces/tabs from each line
-                            result = re.sub(r'^(?:[ \t]{0,4})', '', result, flags=re.MULTILINE)
-                            result = _strip_any_fence(result.strip())
-                        return result
-
-                    start = src.end()
-                    lines = tmdl_text[start:].splitlines()
-
-                    # find first non-empty line to set base indentation
-                    i = 0
-                    while i < len(lines) and lines[i].strip() == "":
-                        i += 1
-                    if i == len(lines):
-                        return None
-
-                    first = lines[i]
-                    base_indent = len(first) - len(first.lstrip())
-
-                    out = []
-                    for line in lines[i:]:
-                        stripped = line.lstrip()
-                        # stop if an annotation starts (even if indented)
-                        if stripped.startswith("annotation "):
-                            break
-                        # stop if indentation drops below the first M line
-                        if stripped and (len(line) - len(stripped)) < base_indent:
-                            break
-                        out.append(line)
-
-                    # trim trailing blank lines
-                    while out and out[-1].strip() == "":
-                        out.pop()
-
-                    # --- Step 3: remove up to 4 leading spaces/tabs per line ---
-                    result = "\n".join(out)
-                    result = re.sub(r'^(?:[ \t]{0,4})', '', result, flags=re.MULTILINE)
-
-                    # --- Step 4: clean code fences ---
-                    result = _strip_any_fence(result.strip())
-
-                    return result
-
-                table_code = extract_table_code(tmdl_data) or ""
-                if table_type_value == "calculated":
-                    code_text = table_code
-                    code_language = "dax"
-                    table_type_value = "calculated"
-                else:
-                    code_text = table_code
-                    code_language = "m"
-
-                tables_data[table_name] = {
-                    "columns": columns,
-                    "import_mode": mode,
-                    "query_group": query_group,
-                    "code_text": code_text,
-                    "code_language": code_language,
-                    "table_type": table_type_value,
-                }
-
-            self.tables_data = tables_data
             self._update_dax_model_identifiers()
             self.populate_tree()
             self._set_dirty(False)
-
-        except Exception as exc:
-            QMessageBox.critical(self, "Error", f"Failed to load tables:\n{exc}")
         finally:
             self._loading_data = False
 
@@ -622,6 +493,8 @@ class PowerQueryTab(QWidget):
                     continue
                 self._update_table_definition(table_path, group_path)
 
+            if self.project:
+                self.project.update_power_query_metadata(self.tables_data, self.query_order, self.query_groups)
             self._set_dirty(False)
             QMessageBox.information(self, "Success", "Changes saved successfully!")
         except Exception as exc:

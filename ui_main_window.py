@@ -25,7 +25,7 @@ from Tabs.tab_dax_query import DAXQueryTab
 from Tabs.tab_dax_writer import DAXWriterTab
 from Tabs.tab_tables_elements import PowerQueryTab
 from Tabs.tab_bookmarks import TabBookmarks
-from common_functions import apply_theme, THEME_PRESETS
+from common_functions import apply_theme, THEME_PRESETS, PBIPProject, load_pbip_project
 
 
 class BusyIndicator(QWidget):
@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Tentacles")
         self.setMinimumSize(800, 300)
 
-        self.pbip_path = None
+        self.project: PBIPProject | None = None
         self.theme_actions: dict[str, QAction] = {}
         self.theme_action_group: QActionGroup | None = None
         self.reload_project_action: QAction | None = None
@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
         if self.reload_project_action is None or self.open_project_folder_action is None:
             return
 
-        has_project = bool(self.pbip_path)
+        has_project = self.project is not None
         self.reload_project_action.setEnabled(has_project)
         self.open_project_folder_action.setEnabled(has_project)
         self.update_theme_checks()
@@ -334,25 +334,29 @@ class MainWindow(QMainWindow):
 
     def open_pbip_via_menu(self):
         """Open a PBIP file using the File > Open menu."""
-        previous_path = self.pbip_path
+        previous_path = str(self.project.pbip_path) if self.project else None
         self.select_pbip_file()
-        if self.pbip_path and self.pbip_path != previous_path:
+        if self.project and str(self.project.pbip_path) != (previous_path or ""):
             self.load_main_tabs()
 
     def reload_current_project(self):
         """Reload the active PBIP project."""
-        if not self.pbip_path:
+        if not self.project:
             QMessageBox.information(self, "No Project", "Select a .pbip file first.")
             return
+        try:
+            self.project.refresh_all()
+        except Exception as exc:
+            QMessageBox.warning(self, "Reload Failed", f"Could not refresh the project:\n{exc}")
         self.load_main_tabs()
 
     def open_project_folder(self):
         """Open the directory that contains the current project file."""
-        if not self.pbip_path:
+        if not self.project:
             QMessageBox.information(self, "No Project", "Select a .pbip file first.")
             return
 
-        folder = os.path.dirname(self.pbip_path)
+        folder = os.path.dirname(str(self.project.pbip_path))
         if not folder or not os.path.isdir(folder):
             QMessageBox.warning(self, "Folder Missing", "Could not locate the project folder on disk.")
             return
@@ -407,9 +411,15 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Invalid File", "Please select a valid .pbip file.")
             return
 
-        self.pbip_path = file_path
-        self.setWindowTitle(f"Tentacles{" - " + os.path.basename(self.pbip_path) if self.pbip_path else ""}")
-        self.file_input.setText(file_path)
+        try:
+            self.project = load_pbip_project(file_path, force_reload=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Failed", f"Could not open PBIP project:\n{exc}")
+            return
+
+        project_path = str(self.project.pbip_path)
+        self.setWindowTitle(f"Tentacles{' - ' + os.path.basename(project_path) if project_path else ''}")
+        self.file_input.setText(project_path)
         self.refresh_menu_state()
 
     def show_loading(self, loading: bool):
@@ -435,15 +445,25 @@ class MainWindow(QMainWindow):
             self.loading_indicator.set_running(loading)
 
     def load_main_tabs(self):
-        # If pbip_path wasn't set via Browse, try to use whatever is in the text field.
-        if not self.pbip_path:
-            candidate = (self.file_input.text() or "").strip()
-            if candidate and candidate.lower().endswith('.pbip') and os.path.isfile(candidate):
-                self.pbip_path = candidate
-                self.setWindowTitle(f"Tentacles{" - " + os.path.basename(self.pbip_path) if self.pbip_path else ""}")
-            else:
-                QMessageBox.warning(self, "Missing File", "Please select a .pbip file first.")
+        if not self.project:
+            candidate = (self.file_input.text() or '').strip()
+            if not candidate or not candidate.lower().endswith('.pbip') or not os.path.isfile(candidate):
+                QMessageBox.warning(self, 'Missing File', 'Please select a .pbip file first.')
                 return
+            try:
+                self.project = load_pbip_project(candidate, force_reload=True)
+            except Exception as exc:
+                QMessageBox.warning(self, 'Project Load Failed', f'Could not load the selected project:\\n{exc}')
+                return
+        else:
+            try:
+                self.project.refresh_all()
+            except Exception as exc:
+                QMessageBox.warning(self, 'Project Reload Failed', f'Could not refresh the project cache:\\n{exc}')
+
+        project_path = str(self.project.pbip_path)
+        self.setWindowTitle(f"Tentacles{' - ' + os.path.basename(project_path) if project_path else ''}")
+        self.file_input.setText(project_path)
 
         inline_feedback = bool(self.confirm_btn and self.confirm_btn.isVisible())
 
@@ -454,24 +474,24 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             tabs = QTabWidget()
-            dax_queries_tab = DAXQueryTab(self.pbip_path)
-            bookmarks_tab = TabBookmarks(self.pbip_path)
-            dax_writer_tab = DAXWriterTab(self.pbip_path)
-            tables_tab = PowerQueryTab(self.pbip_path)
-            search_tab = FileSearchApp(self.pbip_path)
+            dax_queries_tab = DAXQueryTab(self.project)
+            bookmarks_tab = TabBookmarks(self.project)
+            dax_writer_tab = DAXWriterTab(self.project)
+            tables_tab = PowerQueryTab(self.project)
+            search_tab = FileSearchApp(project_path)
 
-            tabs.addTab(tables_tab, "Tables And Elements")
-            tabs.addTab(bookmarks_tab, "Bookmarks")
-            tabs.addTab(dax_queries_tab, "DAX Queries")
-            tabs.addTab(dax_writer_tab, "DAX Writer")
-            tabs.addTab(search_tab, "Search Files")
+            tabs.addTab(tables_tab, 'Tables And Elements')
+            tabs.addTab(bookmarks_tab, 'Bookmarks')
+            tabs.addTab(dax_queries_tab, 'DAX Queries')
+            tabs.addTab(dax_writer_tab, 'DAX Writer')
+            tabs.addTab(search_tab, 'Search Files')
         except Exception as exc:
             if inline_feedback:
                 self.show_loading(False)
             QMessageBox.critical(
                 self,
-                "Project Load Failed",
-                f"An error occurred while loading the project:\n{exc}",
+                'Project Load Failed',
+                f'An error occurred while loading the project:\\n{exc}',
             )
             return
         finally:
@@ -483,8 +503,8 @@ class MainWindow(QMainWindow):
         info_widget = QWidget()
         info_layout = QHBoxLayout()
 
-        file_label = QLabel(f"Current file: {self.pbip_path}")
-        change_button = QPushButton("Change File")
+        file_label = QLabel(f'Current file: {project_path}')
+        change_button = QPushButton('Change File')
         change_button.clicked.connect(self.change_file)
 
         info_layout.addWidget(file_label)
@@ -497,21 +517,19 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(info_widget)
         main_layout.addWidget(tabs)
 
-        # --- Footer credit label (below all tabs) ---
         credit_label = QLabel('<a href="https://www.linkedin.com/in/rodrigoavf/">Created by Rodrigo Ferreira</a>')
         credit_label.setTextFormat(Qt.TextFormat.RichText)
         credit_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         credit_label.setOpenExternalLinks(True)
         credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        credit_label.setStyleSheet("color: gray; font-size: 10pt; margin-top: 12px; margin-bottom: 8px;")
+        credit_label.setStyleSheet('color: gray; font-size: 10pt; margin-top: 12px; margin-bottom: 8px;')
 
         main_layout.addWidget(credit_label)
 
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
         self.refresh_menu_state()
-
     def change_file(self):
-        self.pbip_path = None
+        self.project: PBIPProject | None = None
         self.init_ui()
         self.refresh_menu_state()
