@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import re
+import textwrap
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -491,6 +493,204 @@ def _normalize_group_path(raw: Optional[str]) -> Optional[str]:
     return "/".join(parts) if parts else None
 
 
+def _parse_measure_name_token(token: str) -> tuple[str, bool]:
+    """Return the normalized measure name and whether it was quoted."""
+    text = (token or "").strip()
+    if not text:
+        return "", False
+    quoted = False
+    if (text.startswith("'") and text.endswith("'")) or (text.startswith('"') and text.endswith('"')):
+        quoted = True
+        quote_char = text[0]
+        inner = text[1:-1]
+        if quote_char == "'":
+            inner = inner.replace("''", "'")
+        else:
+            inner = inner.replace('""', '"')
+        return inner, quoted
+    return text, quoted
+
+
+def _normalize_measure_code(indent: str, raw_lines: List[str]) -> tuple[str, str]:
+    """
+    Dedent measure code relative to the surrounding indent and return the code plus leading indent unit.
+    """
+    if not raw_lines:
+        return "", "    "
+
+    adjusted: List[str] = []
+    for line in raw_lines:
+        if not line:
+            adjusted.append("")
+            continue
+        if line.startswith(indent):
+            adjusted.append(line[len(indent):])
+        else:
+            adjusted.append(line)
+
+    indent_unit = "    "
+    for line in adjusted:
+        stripped = line.lstrip()
+        if stripped:
+            indent_unit = line[: len(line) - len(stripped)] or "    "
+            break
+
+    joined = "\n".join(adjusted)
+    normalized = textwrap.dedent(joined).rstrip("\n")
+    return normalized, indent_unit or "    "
+
+
+def _find_measure_insert_position(tmdl_text: str) -> int:
+    partition_match = re.search(r'(?m)^[ \t]*partition\b', tmdl_text)
+    if partition_match:
+        return partition_match.start()
+    return len(tmdl_text)
+
+
+def _parse_measure_block(
+    block_text: str,
+    measure_indent: str,
+    inline_expression: str,
+) -> Dict[str, Any]:
+    lines = block_text.splitlines()
+    expression_lines: List[str] = []
+    if inline_expression:
+        expression_lines.append(f"{measure_indent}{inline_expression}")
+
+    idx = 1
+    while idx < len(lines):
+        line = lines[idx]
+        lowered = line.strip().lower()
+        if lowered.startswith("displayfolder:") or lowered.startswith("lineagetag:") or lowered.startswith("formatstringdefinition"):
+            break
+        expression_lines.append(line)
+        idx += 1
+
+    expression_text, expression_indent = _normalize_measure_code(measure_indent, expression_lines)
+
+    display_folder: Optional[str] = None
+    lineage_tag: Optional[str] = None
+    format_string: Optional[str] = None
+    format_indent = "    "
+    other_metadata: List[str] = []
+
+    while idx < len(lines):
+        line = lines[idx]
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        if lowered.startswith("displayfolder:"):
+            value = line.split(":", 1)[1].strip()
+            display_folder = value or None
+            idx += 1
+            continue
+
+        if lowered.startswith("lineagetag:"):
+            value = line.split(":", 1)[1].strip()
+            lineage_tag = value or None
+            idx += 1
+            continue
+
+        if lowered.startswith("formatstringdefinition"):
+            eq_pos = line.find("=")
+            inline_fmt = line[eq_pos + 1 :].strip() if eq_pos != -1 else ""
+            format_lines: List[str] = []
+            if inline_fmt:
+                format_lines.append(f"{measure_indent}{inline_fmt}")
+            idx += 1
+            while idx < len(lines):
+                candidate = lines[idx]
+                candidate_stripped = candidate.strip()
+                candidate_lower = candidate_stripped.lower()
+                if candidate_lower.startswith("displayfolder:") or candidate_lower.startswith("lineagetag:") or candidate_lower.startswith("formatstringdefinition"):
+                    break
+                format_lines.append(candidate)
+                idx += 1
+            format_string, format_indent = _normalize_measure_code(measure_indent, format_lines)
+            if not format_string:
+                format_string = None
+            continue
+
+        other_metadata.append(line)
+        idx += 1
+
+    return {
+        "indent": measure_indent,
+        "expression": expression_text,
+        "expression_indent": expression_indent or "    ",
+        "display_folder": display_folder,
+        "lineage_tag": lineage_tag,
+        "format_string": format_string,
+        "format_indent": format_indent or "    ",
+        "other_metadata": other_metadata,
+    }
+
+
+def _parse_table_measures(tmdl_text: str) -> Dict[str, Any]:
+    newline = "\r\n" if "\r\n" in tmdl_text else "\n"
+    measures: List[Dict[str, Any]] = []
+
+    measure_pattern = re.compile(
+        r'(?m)^(?P<indent>[ \t]*)measure\s+(?P<name>(\'[^\']*\'|"[^"]+"|[^\s=]+))[ \t]*=[ \t]*(?P<inline>[^\r\n]*)$'
+    )
+    break_pattern = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<keyword>measure|partition)\b')
+
+    matches = list(measure_pattern.finditer(tmdl_text))
+    if not matches:
+        return {
+            "measures": [],
+            "measures_section": None,
+            "measure_insert_pos": _find_measure_insert_position(tmdl_text),
+            "newline": newline,
+        }
+
+    for idx, match in enumerate(matches):
+        start = match.start()
+        measure_indent = match.group("indent") or ""
+        inline_expression = (match.group("inline") or "").strip()
+
+        block_end = len(tmdl_text)
+        next_break = break_pattern.search(tmdl_text, match.end())
+        while next_break:
+            if next_break.start() <= start:
+                next_break = break_pattern.search(tmdl_text, next_break.end())
+                continue
+            break_indent = next_break.group("indent") or ""
+            if len(break_indent) <= len(measure_indent):
+                block_end = next_break.start()
+                break
+            next_break = break_pattern.search(tmdl_text, next_break.end())
+
+        block_text = tmdl_text[start:block_end]
+        raw_name = match.group("name") or ""
+        measure_name, quoted = _parse_measure_name_token(raw_name)
+        measure_details = _parse_measure_block(
+            block_text=block_text,
+            measure_indent=measure_indent,
+            inline_expression=inline_expression,
+        )
+        measure_details.update(
+            {
+                "id": uuid.uuid4().hex,
+                "name": measure_name,
+                "original_name_token": raw_name.strip(),
+                "quoted_name": quoted,
+                "start": start,
+                "end": block_end,
+                "order": idx,
+            }
+        )
+        measures.append(measure_details)
+
+    measures_section = (matches[0].start(), measures[-1]["end"])
+    return {
+        "measures": measures,
+        "measures_section": measures_section,
+        "measure_insert_pos": measures_section[0],
+        "newline": newline,
+    }
+
+
 def _parse_table_tmdl(table_path: Path, tmdl_text: str) -> Dict[str, Any]:
     column_pattern = re.compile(r'(?mi)^\s*column\s+(?:"([^"]+)"|([A-Za-z0-9_]+))\s*$')
     columns: List[str] = []
@@ -521,6 +721,8 @@ def _parse_table_tmdl(table_path: Path, tmdl_text: str) -> Dict[str, Any]:
     code_text = _extract_table_code(tmdl_text) or ""
     code_language = "dax" if table_type == "calculated" else "m"
 
+    measure_info = _parse_table_measures(tmdl_text)
+
     return {
         "columns": columns,
         "import_mode": mode_value,
@@ -529,6 +731,11 @@ def _parse_table_tmdl(table_path: Path, tmdl_text: str) -> Dict[str, Any]:
         "code_language": code_language,
         "table_type": table_type,
         "tmdl_path": str(table_path),
+        "measures": measure_info.get("measures", []),
+        "measure_section": measure_info.get("measures_section"),
+        "measure_insert_pos": measure_info.get("measure_insert_pos"),
+        "line_ending": measure_info.get("newline", "\n"),
+        "tmdl_text": tmdl_text,
     }
 
 
