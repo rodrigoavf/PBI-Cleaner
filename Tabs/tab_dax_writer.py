@@ -1,6 +1,5 @@
 import html
 import json
-import os
 import re
 import threading
 import uuid
@@ -33,7 +32,7 @@ from PyQt6.QtWidgets import (
 
 from Coding.code_editor import CodeEditor
 from Coding.code_editor_support import DAXHighlighter, set_dax_model_identifiers
-from common_functions import code_editor_font
+from common_functions import code_editor_font, PBIPProject, load_pbip_project
 
 
 class _TableColumnHighlightMixin:
@@ -232,9 +231,10 @@ class ChatGPTFreeClient:
 class DAXWriterTab(QWidget):
     """Tab that helps create DAX measures via ChatGPT."""
 
-    def __init__(self, pbip_file: Optional[str] = None):
+    def __init__(self, project: Optional[PBIPProject] = None, pbip_file: Optional[str] = None):
         super().__init__()
-        self.pbip_file = pbip_file
+        self.project = project
+        self.pbip_file = str(project.pbip_path) if project else pbip_file
         self.tables_data: Dict[str, List[str]] = {}
         self.table_patterns: List[Tuple[re.Pattern, str]] = []
         self.column_patterns: List[Tuple[List[re.Pattern], re.Pattern, Tuple[str, str]]] = []
@@ -256,7 +256,13 @@ class DAXWriterTab(QWidget):
         self._building_metadata = False
 
         self._init_ui()
-        if pbip_file:
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception:
+                self.project = None
+        if self.project:
             self.load_metadata()
 
     # ----- UI -----------------------------------------------------------------
@@ -266,7 +272,7 @@ class DAXWriterTab(QWidget):
         main_layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
-        self.generate_button = QPushButton("Generate DAX")
+        self.generate_button = QPushButton("✨ Generate DAX")
         self.generate_button.clicked.connect(self.generate_measure)
         top_bar.addWidget(self.generate_button)
 
@@ -295,7 +301,7 @@ class DAXWriterTab(QWidget):
         output_header = QHBoxLayout()
         output_header.addWidget(QLabel("Generated DAX Measure:"))
         output_header.addStretch()
-        self.copy_button = QPushButton("Copy")
+        self.copy_button = QPushButton("📋 Copy")
         self.copy_button.clicked.connect(self.copy_output)
         output_header.addWidget(self.copy_button)
         main_layout.addLayout(output_header)
@@ -382,14 +388,33 @@ class DAXWriterTab(QWidget):
 
     # ----- Metadata -----------------------------------------------------------
     def load_metadata(self):
-        if not self.pbip_file:
-            return
         if self._building_metadata:
+            return
+
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                if self.status_label:
+                    self.status_label.setText(f"Metadata load failed: {exc}")
+                return
+
+        if not self.project:
+            if self.status_label:
+                self.status_label.setText("Select a PBIP file to load metadata.")
             return
 
         self._building_metadata = True
         try:
-            tables = self._extract_model_metadata()
+            metadata = self.project.get_power_query_metadata()
+            if metadata.error:
+                raise RuntimeError(metadata.error)
+
+            tables = {
+                name: list(info.get("columns") or [])
+                for name, info in metadata.tables.items()
+            }
             self.tables_data = tables
             self._build_patterns()
             self._update_highlighters()
@@ -399,65 +424,20 @@ class DAXWriterTab(QWidget):
 
             table_count = len(tables)
             column_count = sum(len(cols) for cols in tables.values())
-            self.status_label.setText(
-                f"Loaded {table_count} tables and {column_count} columns from the model."
-            )
+            if self.status_label:
+                self.status_label.setText(
+                    f"Loaded {table_count} tables and {column_count} columns from the model."
+                )
         except Exception as exc:
             self.tables_data = {}
             self.table_patterns = []
             self.column_patterns = []
             self._update_highlighters()
             self._update_table_tree()
-            self.status_label.setText(f"Metadata load failed: {exc}")
+            if self.status_label:
+                self.status_label.setText(f"Metadata load failed: {exc}")
         finally:
             self._building_metadata = False
-
-    def _extract_model_metadata(self) -> Dict[str, List[str]]:
-        if not self.pbip_file:
-            raise RuntimeError("No PBIP file selected.")
-
-        pbip_path = os.path.abspath(self.pbip_file)
-        if not os.path.isfile(pbip_path):
-            raise RuntimeError(f"PBIP file not found: {pbip_path}")
-
-        semantic_root = os.path.splitext(pbip_path)[0] + ".SemanticModel"
-        tables_dir = os.path.join(semantic_root, "definition", "tables")
-        if not os.path.isdir(tables_dir):
-            raise RuntimeError("Model tables directory not found.")
-
-        table_columns: Dict[str, List[str]] = {}
-
-        for filename in os.listdir(tables_dir):
-            if not filename.lower().endswith(".tmdl"):
-                continue
-            table_name = os.path.splitext(filename)[0]
-            table_path = os.path.join(tables_dir, filename)
-            try:
-                with open(table_path, "r", encoding="utf-8") as handle:
-                    content = handle.read()
-            except OSError:
-                continue
-
-            columns = self._parse_columns_from_tmdl(content)
-            table_columns[table_name] = columns
-
-        if not table_columns:
-            raise RuntimeError("No table metadata found in model.")
-
-        return table_columns
-
-    @staticmethod
-    def _parse_columns_from_tmdl(content: str) -> List[str]:
-        pattern = re.compile(
-            r'(?mi)^\s*column\s+(?:"([^"]+)"|([A-Za-z0-9_]+))\s*$'
-        )
-        columns: List[str] = []
-        for match in pattern.finditer(content):
-            column = match.group(1) or match.group(2) or ""
-            column = column.strip()
-            if column:
-                columns.append(column)
-        return columns
 
     def _update_autocomplete(self):
         tables_terms: List[str] = []
@@ -610,7 +590,7 @@ class DAXWriterTab(QWidget):
     def generate_measure(self):
         if not self.prompt_editor or not self.output_editor or not self.generate_button:
             return
-        if not self.pbip_file:
+        if not self.project:
             QMessageBox.warning(self, "No PBIP", "Select a PBIP file to continue.")
             return
 

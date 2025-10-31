@@ -1,5 +1,6 @@
 import os
 import json
+from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QSplitter, QMessageBox, QLabel, QMenu, QAbstractItemView
@@ -9,16 +10,17 @@ from PyQt6.QtGui import (
     QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence
 )
 from Coding.code_editor import CodeEditor
-from common_functions import code_editor_font
+from common_functions import code_editor_font, PBIPProject, load_pbip_project
 
 
 INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
 
 
 class DAXQueryTab(QWidget):
-    def __init__(self, pbip_file: str = None):
+    def __init__(self, project: Optional[PBIPProject] = None, pbip_file: Optional[str] = None):
         super().__init__()
-        self.pbip_file = pbip_file
+        self.project = project
+        self.pbip_file = str(project.pbip_path) if project else pbip_file
         self.default_query = None
         self.queries = {}
         self.ignore_item_changes = False
@@ -26,7 +28,13 @@ class DAXQueryTab(QWidget):
         self.renaming_original_name = ""
         self.ignore_editor_changes = False
         self.init_ui()
-        if pbip_file:
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception:
+                self.project = None
+        if self.project:
             self.load_queries()
 
     def init_ui(self):
@@ -159,6 +167,15 @@ class DAXQueryTab(QWidget):
 
     def refresh_queries(self):
         """Reload queries from disk, discarding unsaved changes."""
+        if self.project:
+            self.project.reload_dax_queries()
+        elif self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file, force_reload=True)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Error", f"Failed to reload queries:\n{exc}")
+                return
         self.load_queries()
         self.save_button.setEnabled(False)
 
@@ -201,38 +218,46 @@ class DAXQueryTab(QWidget):
 
     def load_queries(self):
         """Load DAX queries from the PBIP file."""
-        if not self.pbip_file or not os.path.isfile(self.pbip_file):
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Error", f"Failed to load queries:\n{exc}")
+                return
+
+        if not self.project:
+            QMessageBox.information(self, "No PBIP", "Select a PBIP file to load DAX queries.")
             return
 
-        root_dir = os.path.splitext(self.pbip_file)[0] + ".SemanticModel/DAXQueries"
-        json_path = os.path.join(root_dir, ".pbi", "daxQueries.json")
-
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            queries = {}
-            for query in data["tabOrder"]:
-                with open(os.path.join(root_dir, f"{query}.dax"), "r", encoding="utf-8") as f:
-                    dax_code = f.read()
-                queries[query] = dax_code
-
-            self.queries = queries
-            self.default_query = data.get("defaultTab")
-
+        metadata = self.project.get_dax_queries_metadata()
+        if metadata.error:
+            QMessageBox.warning(self, "Error", f"Failed to load queries:\n{metadata.error}")
+            self.queries = {}
+            self.default_query = None
             self.ignore_item_changes = True
             self.query_list.clear()
-            for name in self.queries.keys():
-                self.query_list.addItem(self.create_query_item(name))
             self.ignore_item_changes = False
+            self.on_selection_changed()
+            return
 
-            if self.query_list.count() > 0:
-                self.query_list.setCurrentRow(0)
-            else:
-                self.on_selection_changed()
+        tab_order = list(metadata.tab_order)
+        extras = [name for name in metadata.queries if name not in tab_order]
+        tab_order.extend(sorted(extras, key=str.casefold))
 
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to load queries:\n{str(e)}")
+        self.queries = {name: metadata.queries.get(name, "") for name in tab_order}
+        self.default_query = metadata.default_tab
+
+        self.ignore_item_changes = True
+        self.query_list.clear()
+        for name in tab_order:
+            self.query_list.addItem(self.create_query_item(name))
+        self.ignore_item_changes = False
+
+        if self.query_list.count() > 0:
+            self.query_list.setCurrentRow(0)
+        else:
+            self.on_selection_changed()
 
     def on_selection_changed(self):
         """Handle query selection changes."""
@@ -625,6 +650,8 @@ class DAXQueryTab(QWidget):
                 with open(os.path.join(root_dir, f"{name}.dax"), "w", encoding="utf-8") as f:
                     f.write(code)
 
+            if self.project:
+                self.project.update_dax_queries_metadata(new_query_order, self.queries, self.default_query)
             self.save_button.setEnabled(False)
             QMessageBox.information(self, "Success", "Changes saved successfully!")
 

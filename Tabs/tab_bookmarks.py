@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from common_functions import APP_THEME, simple_hash
+from common_functions import APP_THEME, PBIPProject, load_pbip_project, simple_hash
 import random
 
 @dataclass
@@ -76,9 +76,10 @@ class TabBookmarks(QWidget):
     ITEM_BOOKMARK = "bookmark"
     ITEM_FOLDER = "folder"
 
-    def __init__(self, pbip_file: Optional[str] = None):
+    def __init__(self, project: Optional[PBIPProject] = None, pbip_file: Optional[str] = None):
         super().__init__()
-        self.pbip_file = pbip_file
+        self.project = project
+        self.pbip_file = str(project.pbip_path) if project else pbip_file
         self.bookmarks: Dict[str, BookmarkMeta] = {}
         self.folders: Dict[str, dict] = {}
         self.structure: List[dict] = []
@@ -91,7 +92,13 @@ class TabBookmarks(QWidget):
         self.folder_icon = self._load_icon("Folder.svg")
 
         self.init_ui()
-        if self.pbip_file:
+        if not self.project and self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception:
+                self.project = None
+        if self.project:
             self.load_bookmarks()
         else:
             self.update_status("Select a PBIP file to view bookmarks.", warning=False)
@@ -106,7 +113,7 @@ class TabBookmarks(QWidget):
         toolbar.setSpacing(8)
 
         primary_row = QHBoxLayout()
-        self.save_button = QPushButton("💾 Save")
+        self.save_button = QPushButton("💾 Save Changes")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.on_save_clicked)
         primary_row.addWidget(self.save_button)
@@ -258,7 +265,7 @@ class TabBookmarks(QWidget):
         return os.path.join(base, "definition", "pages")
 
     def load_bookmarks(self):
-        base_dir = self.bookmarks_base_dir()
+        metadata = None
         self._loading = True
         self.tree.clear()
         self.bookmarks.clear()
@@ -267,100 +274,61 @@ class TabBookmarks(QWidget):
         warnings: List[str] = []
         self.tree.setEnabled(True)
 
-        if not base_dir or not os.path.isdir(base_dir):
-            self.tree.setEnabled(False)
-            self.update_status("Bookmarks folder not found for this PBIP.", warning=True)
-            self.mark_dirty(False, force=True)
-            self._loading = False
-            self.update_actions_state()
-            self.apply_filter()
-            return
-
-        bookmarks_json_path = os.path.join(base_dir, "bookmarks.json")
-        try:
-            with open(bookmarks_json_path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except FileNotFoundError:
-            self.tree.setEnabled(False)
-            self.update_status("bookmarks.json not found in the project.", warning=True)
-            self.mark_dirty(False, force=True)
-            self._loading = False
-            self.update_actions_state()
-            self.apply_filter()
-            return
-        except Exception as exc:
-            self.tree.setEnabled(False)
-            self.update_status(f"Failed to parse bookmarks.json: {exc}", warning=True)
-            self.mark_dirty(False, force=True)
-            self._loading = False
-            self.update_actions_state()
-            self.apply_filter()
-            return
-
-        raw_items = data.get("items")
-        if not isinstance(raw_items, list):
-            self.tree.setEnabled(False)
-            self.update_status("bookmarks.json missing a valid 'items' list.", warning=True)
-            self.mark_dirty(False, force=True)
-            self._loading = False
-            self.update_actions_state()
-            self.apply_filter()
-            return
-
-        child_lookup: Set[str] = set()
-        for entry in raw_items:
-            if isinstance(entry, dict):
-                children = entry.get("children")
-                if isinstance(children, list):
-                    child_lookup.update(str(child) for child in children if isinstance(child, str))
-
-        # Read folder definitions
-        for entry in raw_items:
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            if not isinstance(name, str):
-                continue
-            if "children" in entry:
-                children = entry.get("children")
-                if isinstance(children, list):
-                    valid_children = [child for child in children if isinstance(child, str)]
-                else:
-                    valid_children = []
-                display_name = entry.get("displayName") or name
-                self.folders[name] = {"display": display_name, "children": valid_children}
-
-        # Read bookmark metadata from files
-        for fname in os.listdir(base_dir):
-            if not fname.lower().endswith(".bookmark.json"):
-                continue
-            stem = fname[:-len(".bookmark.json")]
-            path = os.path.join(base_dir, fname)
-            display = stem
-            valid = True
-            error_message = None
+        if not self.project and self.pbip_file:
             try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    bookmark_data = json.load(fh)
-                display = bookmark_data.get("displayName") or display
-            except json.JSONDecodeError as exc:
-                display = f"{stem} (invalid)"
-                valid = False
-                error_message = f"Invalid JSON: {exc}"
-                warnings.append(f"Bookmark '{stem}' has invalid JSON.")
+                self.project = load_pbip_project(self.pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
             except Exception as exc:
-                display = f"{stem} (unreadable)"
-                valid = False
-                error_message = str(exc)
-                warnings.append(f"Bookmark '{stem}' could not be read.")
+                self.tree.setEnabled(False)
+                self.update_status(f"Failed to load PBIP project: {exc}", warning=True)
+                self.mark_dirty(False, force=True)
+                self._loading = False
+                self.update_actions_state()
+                self.apply_filter()
+                return
 
-            self.bookmarks[stem] = BookmarkMeta(display_name=display, path=path, valid=valid, error=error_message)
+        if not self.project:
+            self.tree.setEnabled(False)
+            self.update_status("Select a PBIP file to view bookmarks.", warning=False)
+            self.mark_dirty(False, force=True)
+            self._loading = False
+            self.update_actions_state()
+            self.apply_filter()
+            return
 
-        self._compute_bookmark_usage()
+        metadata = self.project.get_bookmarks_metadata()
+        if metadata.error:
+            self.tree.setEnabled(False)
+            self.update_status(f"Failed to load bookmarks: {metadata.error}", warning=True)
+            self.mark_dirty(False, force=True)
+            self._loading = False
+            self.update_actions_state()
+            self.apply_filter()
+            return
 
-        # Build tree according to items order
+        warnings = list(metadata.warnings)
+        self.folders = dict(metadata.folders)
+        self.structure = list(metadata.structure)
+
+        self.bookmarks = {}
+        for bookmark_id, info in metadata.bookmarks.items():
+            self.bookmarks[bookmark_id] = BookmarkMeta(
+                display_name=info.get("display_name", bookmark_id),
+                path=info.get("path"),
+                valid=info.get("valid", False),
+                used=info.get("used", False),
+                error=info.get("error"),
+            )
+
+        raw_items = metadata.items or []
+
         bookmarks_in_tree: Set[str] = set()
-        bookmarks_in_folders = {child for folder in self.folders.values() for child in folder["children"]}
+        bookmarks_in_folders = {
+            child
+            for folder in self.folders.values()
+            for child in folder.get("children", [])
+            if isinstance(child, str)
+        }
 
         for entry in raw_items:
             if not isinstance(entry, dict):
@@ -373,6 +341,8 @@ class TabBookmarks(QWidget):
                 folder_item = self.create_folder_item(name)
                 self.tree.addTopLevelItem(folder_item)
                 for child_name in self.folders.get(name, {}).get("children", []):
+                    if not isinstance(child_name, str):
+                        continue
                     self.add_bookmark_item(child_name, folder_item)
                     bookmarks_in_tree.add(child_name)
                 folder_item.setExpanded(True)
@@ -382,7 +352,6 @@ class TabBookmarks(QWidget):
                 self.add_bookmark_item(name, None)
                 bookmarks_in_tree.add(name)
 
-        # Add any bookmarks not referenced in items (sorted for stability)
         for name in sorted(set(self.bookmarks.keys()) - bookmarks_in_tree, key=lambda n: self.bookmarks[n].display_name.casefold()):
             self.add_bookmark_item(name, None)
 
@@ -400,7 +369,6 @@ class TabBookmarks(QWidget):
         self.update_actions_state()
         if not self._loading:
             self._adjust_usage_column_width()
-
     def _compute_bookmark_usage(self):
         for meta in self.bookmarks.values():
             meta.used = False
@@ -697,6 +665,19 @@ class TabBookmarks(QWidget):
 
         self.structure = [{"type": entry["type"], "id": entry["id"]} for entry in snapshot]
 
+        bookmarks_payload = {
+            key: {
+                "display_name": meta.display_name,
+                "path": meta.path,
+                "valid": meta.valid,
+                "used": meta.used,
+                "error": meta.error,
+            }
+            for key, meta in self.bookmarks.items()
+        }
+        if self.project:
+            self.project.update_bookmarks_metadata(bookmarks_payload, self.folders, new_items, warnings)
+
         self.apply_filter()
         self.update_actions_state()
 
@@ -717,6 +698,15 @@ class TabBookmarks(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
+                return
+        if self.project:
+            self.project.reload_bookmarks()
+        elif self.pbip_file:
+            try:
+                self.project = load_pbip_project(self.pbip_file, force_reload=True)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Reload Failed", f"Could not reload bookmarks:\n{exc}")
                 return
         self.load_bookmarks()
 
@@ -1239,7 +1229,18 @@ class TabBookmarks(QWidget):
     # --- External API -----------------------------------------------------
     def set_pbip_file(self, pbip_file: Optional[str]):
         self.pbip_file = pbip_file
+        self.project = None
         if pbip_file:
+            try:
+                self.project = load_pbip_project(pbip_file)
+                self.pbip_file = str(self.project.pbip_path)
+            except Exception as exc:
+                self.tree.clear()
+                self.tree.setEnabled(False)
+                self.update_status(f"Failed to load PBIP project: {exc}", warning=True)
+                self.mark_dirty(False, force=True)
+                self.apply_filter()
+                return
             self.load_bookmarks()
         else:
             self.tree.clear()
