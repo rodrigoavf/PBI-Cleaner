@@ -272,7 +272,7 @@ class DAXWriterTab(QWidget):
         main_layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
-        self.generate_button = QPushButton("Generate DAX")
+        self.generate_button = QPushButton("✨ Generate DAX")
         self.generate_button.clicked.connect(self.generate_measure)
         top_bar.addWidget(self.generate_button)
 
@@ -301,7 +301,7 @@ class DAXWriterTab(QWidget):
         output_header = QHBoxLayout()
         output_header.addWidget(QLabel("Generated DAX Measure:"))
         output_header.addStretch()
-        self.copy_button = QPushButton("Copy")
+        self.copy_button = QPushButton("📋 Copy")
         self.copy_button.clicked.connect(self.copy_output)
         output_header.addWidget(self.copy_button)
         main_layout.addLayout(output_header)

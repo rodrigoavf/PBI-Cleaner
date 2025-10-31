@@ -75,7 +75,7 @@ class PowerQueryTab(QWidget):
         main_layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
-        self.save_button = QPushButton("Save Changes")
+        self.save_button = QPushButton("💾 Save Changes")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.save_changes)
         top_bar.addWidget(self.save_button)

@@ -113,7 +113,7 @@ class TabBookmarks(QWidget):
         toolbar.setSpacing(8)
 
         primary_row = QHBoxLayout()
-        self.save_button = QPushButton("💾 Save")
+        self.save_button = QPushButton("💾 Save Changes")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.on_save_clicked)
         primary_row.addWidget(self.save_button)
