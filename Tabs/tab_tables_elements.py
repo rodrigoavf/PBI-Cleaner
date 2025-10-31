@@ -2,9 +2,9 @@ import os
 import re
 import uuid
 from collections import defaultdict
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple, Set
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -23,11 +23,142 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 from PyQt6.QtGui import (
-    QFont, QIcon, QDragEnterEvent, QDropEvent, QShortcut, QKeySequence, QIcon, QPixmap, QImage
+    QFont,
+    QIcon,
+    QDragMoveEvent,
+    QDropEvent,
+    QShortcut,
+    QKeySequence,
+    QPixmap,
+    QImage,
 )
 from Coding.code_editor import CodeEditor
 from Coding.code_editor_support import set_dax_model_identifiers
 from common_functions import code_editor_font, APP_THEME, PBIPProject, load_pbip_project, _parse_table_measures
+
+
+class HierarchyTree(QTreeWidget):
+    """QTreeWidget that prevents tables from being nested while still allowing reordering."""
+
+    structure_changed = pyqtSignal()
+
+    def __init__(self, type_role: int, table_marker: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._type_role = type_role
+        self._table_marker = table_marker
+
+    def _drag_contains_tables(self) -> bool:
+        for item in self.selectedItems():
+            if item and item.data(0, self._type_role) == self._table_marker:
+                return True
+        return False
+
+    def _is_drop_on_table(self, event: QDropEvent) -> bool:
+        if self.dropIndicatorPosition() != QAbstractItemView.DropIndicatorPosition.OnItem:
+            return False
+        target = self.itemAt(event.position().toPoint())
+        if target is None:
+            return False
+        return target.data(0, self._type_role) == self._table_marker
+
+    def _item_path(self, item: QTreeWidgetItem) -> Tuple[int, ...]:
+        path: List[int] = []
+        current = item
+        while current is not None:
+            parent = current.parent()
+            if parent is None:
+                idx = self.indexOfTopLevelItem(current)
+            else:
+                idx = parent.indexOfChild(current)
+            path.insert(0, idx)
+            current = parent
+        return tuple(path)
+
+    def _remove_item(self, item: QTreeWidgetItem) -> None:
+        parent = item.parent()
+        if parent is None:
+            idx = self.indexOfTopLevelItem(item)
+            if idx != -1:
+                self.takeTopLevelItem(idx)
+        else:
+            idx = parent.indexOfChild(item)
+            if idx != -1:
+                parent.takeChild(idx)
+
+    def _insert_item(
+        self,
+        container: Optional[QTreeWidgetItem],
+        index: int,
+        item: QTreeWidgetItem,
+    ) -> None:
+        if container is None:
+            self.insertTopLevelItem(index, item)
+        else:
+            container.insertChild(index, item)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._drag_contains_tables() and self._is_drop_on_table(event):
+            event.accept()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if not (self._drag_contains_tables() and self._is_drop_on_table(event)):
+            super().dropEvent(event)
+            return
+
+        target = self.itemAt(event.position().toPoint())
+        if target is None:
+            event.ignore()
+            return
+
+        tables = [
+            item
+            for item in self.selectedItems()
+            if item.data(0, self._type_role) == self._table_marker and item is not target
+        ]
+        if not tables:
+            event.ignore()
+            return
+
+        parent = target.parent()
+        if parent is None and self.indexOfTopLevelItem(target) == -1:
+            event.ignore()
+            return
+
+        container = parent
+        index = (
+            container.indexOfChild(target)
+            if container is not None
+            else self.indexOfTopLevelItem(target)
+        )
+
+        rect = self.visualItemRect(target)
+        insert_after = event.position().toPoint().y() > rect.center().y()
+        if insert_after:
+            index += 1
+
+        tables_sorted = sorted(tables, key=self._item_path)
+
+        # Remove moving tables first (deepest items removed first to avoid index shifts)
+        for table_item in sorted(tables_sorted, key=self._item_path, reverse=True):
+            self._remove_item(table_item)
+
+        insertion_order = tables_sorted if insert_after else list(reversed(tables_sorted))
+
+        current_index = index
+        for table_item in insertion_order:
+            self._insert_item(container, current_index, table_item)
+            current_index += 1
+
+        # Restore selection on moved items
+        self.clearSelection()
+        for item in tables_sorted:
+            item.setSelected(True)
+
+        self.setCurrentItem(tables_sorted[-1])
+        self.structure_changed.emit()
+        event.accept()
 
 
 class PowerQueryTab(QWidget):
@@ -41,6 +172,20 @@ class PowerQueryTab(QWidget):
     ITEM_MEASURE_FOLDER = "measure_folder"
     ITEM_MEASURE = "measure"
     OTHER_QUERIES_NAME = "Other Queries"
+    ALLOWED_CHILDREN: Dict[str, Set[str]] = {
+        ITEM_FOLDER: frozenset({ITEM_FOLDER, ITEM_TABLE}),
+        ITEM_TABLE: frozenset({ITEM_COLUMN, ITEM_MEASURE_FOLDER, ITEM_MEASURE}),
+        ITEM_MEASURE_FOLDER: frozenset({ITEM_MEASURE}),
+        ITEM_MEASURE: frozenset(),
+        ITEM_COLUMN: frozenset(),
+    }
+    ALLOWED_PARENTS: Dict[str, Set[Optional[str]]] = {
+        ITEM_FOLDER: frozenset({None, ITEM_FOLDER}),
+        ITEM_TABLE: frozenset({ITEM_FOLDER}),
+        ITEM_COLUMN: frozenset({ITEM_TABLE}),
+        ITEM_MEASURE_FOLDER: frozenset({ITEM_TABLE}),
+        ITEM_MEASURE: frozenset({ITEM_TABLE, ITEM_MEASURE_FOLDER}),
+    }
 
     def __init__(self, project: Optional[PBIPProject] = None, pbip_file: Optional[str] = None):
         super().__init__()
@@ -108,7 +253,7 @@ class PowerQueryTab(QWidget):
 
         left_layout.addWidget(QLabel("Tables"))
 
-        self.table_tree = QTreeWidget()
+        self.table_tree = HierarchyTree(self.TYPE_ROLE, self.ITEM_TABLE)
         self.table_tree.setHeaderHidden(True)
         self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
@@ -121,6 +266,7 @@ class PowerQueryTab(QWidget):
         self.table_tree.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.table_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
+        self.table_tree.structure_changed.connect(self.on_tree_structure_changed)
         self.table_tree.itemChanged.connect(self.on_tree_item_changed)
         try:
             self.table_tree.model().rowsMoved.connect(self.on_tree_structure_changed)
@@ -1005,7 +1151,6 @@ class PowerQueryTab(QWidget):
             new_measure_folder_action = menu.addAction("New Display Folder")
         elif item_type == self.ITEM_MEASURE_FOLDER:
             new_measure_action = menu.addAction("New Measure")
-            new_measure_folder_action = menu.addAction("New Folder")
             rename_action = menu.addAction("Rename Folder")
             delete_action = menu.addAction("Delete Folder")
         elif item_type == self.ITEM_MEASURE:
@@ -1020,9 +1165,9 @@ class PowerQueryTab(QWidget):
         if chosen == new_query_folder_action:
             parent_folder = item if (item and item.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER) else None
             self.create_new_folder(parent_folder)
-        elif chosen == new_measure_action and item is not None:
+        elif new_measure_action and chosen == new_measure_action and item is not None:
             self.create_new_measure(item)
-        elif chosen == new_measure_folder_action and item is not None:
+        elif new_measure_folder_action and chosen == new_measure_folder_action and item is not None:
             target = item
             if item_type == self.ITEM_MEASURE:
                 target = item.parent() or self._table_item_for(item)
@@ -1112,14 +1257,10 @@ class PowerQueryTab(QWidget):
         if not table_name:
             return
 
-        parent_for_unique = parent_item if parent_item.data(0, self.TYPE_ROLE) == self.ITEM_MEASURE_FOLDER else table_item
-        folder_name = self.generate_unique_measure_folder_name("New Folder", parent_for_unique)
-        parent_path = parent_item.data(0, self.KEY_ROLE) if parent_item.data(0, self.TYPE_ROLE) == self.ITEM_MEASURE_FOLDER else None
-        canonical = folder_name if not parent_path else f"{parent_path}/{folder_name}"
-
+        folder_name = self.generate_unique_measure_folder_name("New Folder", table_item)
         folder_item = QTreeWidgetItem([folder_name])
         folder_item.setData(0, self.TYPE_ROLE, self.ITEM_MEASURE_FOLDER)
-        folder_item.setData(0, self.KEY_ROLE, canonical)
+        folder_item.setData(0, self.KEY_ROLE, folder_name)
         folder_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
         flags = (
             Qt.ItemFlag.ItemIsEnabled
@@ -1132,9 +1273,9 @@ class PowerQueryTab(QWidget):
         if self.folder_icon and not self.folder_icon.isNull():
             folder_item.setIcon(0, self.folder_icon)
 
-        parent_item.addChild(folder_item)
-        self.ensure_measure_items_sorted(parent_item)
-        self.table_tree.expandItem(parent_item)
+        table_item.addChild(folder_item)
+        self.ensure_measure_items_sorted(table_item)
+        self.table_tree.expandItem(table_item)
         self.table_tree.setCurrentItem(folder_item)
         self.table_tree.editItem(folder_item)
         self.mark_dirty()
@@ -1449,105 +1590,179 @@ class PowerQueryTab(QWidget):
             current_item = self.table_tree.currentItem()
             self.ensure_other_queries_last()
 
-            # Enforce structure rules:
-            # - No items (tables or folders) are allowed inside a table.
-            # - Tables may not exist at top-level; move them to Other Queries.
-            # - Folders can be nested (allowed), so do not force-flatten them.
+            def _item_type(node: Optional[QTreeWidgetItem]) -> Optional[str]:
+                return node.data(0, self.TYPE_ROLE) if node is not None else None
 
-            # 1) Move any top-level tables to Other Queries (keeps structure sane)
-            idx = self.table_tree.topLevelItemCount() - 1
-            while idx >= 0:
+            def _detach(item: QTreeWidgetItem) -> None:
+                parent = item.parent()
+                if parent is not None:
+                    parent.removeChild(item)
+                else:
+                    idx_local = self.table_tree.indexOfTopLevelItem(item)
+                    if idx_local != -1:
+                        self.table_tree.takeTopLevelItem(idx_local)
+
+            def _insert_at_root(item: QTreeWidgetItem) -> None:
+                nonlocal changed
+                other = self.ensure_other_queries_folder()
+                idx_other = self.table_tree.indexOfTopLevelItem(other)
+                if idx_other == -1:
+                    self.table_tree.addTopLevelItem(item)
+                else:
+                    self.table_tree.insertTopLevelItem(idx_other, item)
+                changed = True
+
+            def _nearest_folder_ancestor(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+                current = item.parent()
+                while current is not None:
+                    if _item_type(current) == self.ITEM_FOLDER:
+                        return current
+                    current = current.parent()
+                return None
+
+            def _closest_table(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+                table_item = self._table_item_for(item)
+                if table_item:
+                    return table_item
+                table_name = item.data(0, Qt.ItemDataRole.UserRole)
+                if table_name:
+                    return self._find_table_item(table_name)
+                return None
+
+            def _repair_parent(item: QTreeWidgetItem) -> bool:
+                nonlocal changed
+                node_type = _item_type(item)
+                parent_item = item.parent()
+                parent_type = _item_type(parent_item)
+
+                allowed = self.ALLOWED_PARENTS.get(node_type, frozenset())
+                if parent_type in allowed:
+                    if node_type == self.ITEM_MEASURE_FOLDER:
+                        table_item = self._table_item_for(item)
+                        if table_item is None:
+                            table_item = _closest_table(item)
+                            if table_item is not None and table_item is not parent_item:
+                                _detach(item)
+                                table_item.addChild(item)
+                                self._reset_measure_folder_paths(item, None)
+                                self.ensure_measure_items_sorted(table_item)
+                                changed = True
+                                return True
+                    return False
+
+                if node_type == self.ITEM_FOLDER:
+                    destination = _nearest_folder_ancestor(item)
+                    _detach(item)
+                    if destination is not None:
+                        destination.addChild(item)
+                    else:
+                        _insert_at_root(item)
+                    changed = True
+                    return True
+
+                if node_type == self.ITEM_TABLE:
+                    destination_folder = _nearest_folder_ancestor(item)
+                    if destination_folder is None:
+                        destination_folder = self.ensure_other_queries_folder()
+                    _detach(item)
+                    destination_folder.addChild(item)
+                    self.sort_tables_in_folder(destination_folder)
+                    self.ensure_columns_sorted(item)
+                    self.ensure_measure_items_sorted(item)
+                    changed = True
+                    return True
+
+                if node_type == self.ITEM_COLUMN:
+                    table_item = _closest_table(item)
+                    if table_item is None:
+                        return False
+                    _detach(item)
+                    table_item.addChild(item)
+                    item.setData(0, Qt.ItemDataRole.UserRole, table_item.data(0, Qt.ItemDataRole.UserRole))
+                    self.ensure_columns_sorted(table_item)
+                    changed = True
+                    return True
+
+                if node_type == self.ITEM_MEASURE_FOLDER:
+                    table_item = _closest_table(item)
+                    if table_item is None:
+                        return False
+                    _detach(item)
+                    table_item.addChild(item)
+                    self._reset_measure_folder_paths(item, None)
+                    self.ensure_measure_items_sorted(table_item)
+                    changed = True
+                    return True
+
+                if node_type == self.ITEM_MEASURE:
+                    table_item = _closest_table(item)
+                    if table_item is None:
+                        return False
+                    _detach(item)
+                    table_item.addChild(item)
+                    item.setData(0, Qt.ItemDataRole.UserRole, table_item.data(0, Qt.ItemDataRole.UserRole))
+                    self.ensure_measure_items_sorted(table_item)
+                    changed = True
+                    return True
+
+                return False
+
+            idx = 0
+            while idx < self.table_tree.topLevelItemCount():
                 top_item = self.table_tree.topLevelItem(idx)
-                if top_item and top_item.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
-                    taken = self.table_tree.takeTopLevelItem(idx)
-                    other = self.ensure_other_queries_folder()
-                    other.addChild(taken)
-                idx -= 1
+                if top_item is None:
+                    idx += 1
+                    continue
+                if _item_type(top_item) != self.ITEM_FOLDER:
+                    if not _repair_parent(top_item):
+                        idx += 1
+                else:
+                    idx += 1
 
-            # 2) For each table anywhere in the tree, ensure its children are columns only.
-            def _fix_table_children(item: QTreeWidgetItem):
-                item_type = item.data(0, self.TYPE_ROLE)
-
-                if item_type == self.ITEM_MEASURE:
-                    containing_table = self._table_item_for(item)
-                    if not containing_table:
-                        target_table = self._find_table_item(item.data(0, Qt.ItemDataRole.UserRole))
-                        if target_table:
-                            parent_ref = item.parent()
-                            if parent_ref:
-                                parent_ref.removeChild(item)
-                            target_table.addChild(item)
-                            self.ensure_measure_items_sorted(target_table)
-                    return
-
-                if item_type == self.ITEM_MEASURE_FOLDER:
-                    containing_table = self._table_item_for(item)
-                    if not containing_table:
-                        table_name = item.data(0, Qt.ItemDataRole.UserRole)
-                        containing_table = self._find_table_item(table_name)
-                        if containing_table:
-                            parent_ref = item.parent()
-                            if parent_ref:
-                                parent_ref.removeChild(item)
-                            containing_table.addChild(item)
-                            self.ensure_measure_items_sorted(containing_table)
-                    if containing_table:
-                        item.setData(0, Qt.ItemDataRole.UserRole, containing_table.data(0, Qt.ItemDataRole.UserRole))
-                    move_index = item.childCount() - 1
-                    while move_index >= 0:
-                        ch = item.child(move_index)
-                        ch_type = ch.data(0, self.TYPE_ROLE)
-                        if ch_type == self.ITEM_TABLE:
-                            item.takeChild(move_index)
-                            destination = containing_table.parent() if containing_table else None
-                            if destination:
-                                destination.addChild(ch)
-                                self.sort_tables_in_folder(destination)
-                            else:
-                                other = self.ensure_other_queries_folder()
-                                other.addChild(ch)
-                                self.sort_tables_in_folder(other)
-                        elif ch_type == self.ITEM_FOLDER:
-                            item.takeChild(move_index)
-                            self.table_tree.addTopLevelItem(ch)
-                        elif ch_type == self.ITEM_COLUMN:
-                            item.takeChild(move_index)
-                            if containing_table:
-                                containing_table.addChild(ch)
-                                self.ensure_columns_sorted(containing_table)
-                        move_index -= 1
-                    self.ensure_measure_items_sorted(item)
-
-                if item_type == self.ITEM_TABLE:
-                    parent_folder = item.parent()
-                    move_index = item.childCount() - 1
-                    while move_index >= 0:
-                        ch = item.child(move_index)
-                        ch_type = ch.data(0, self.TYPE_ROLE)
-                        if ch_type == self.ITEM_TABLE:
-                            item.takeChild(move_index)
-                            if parent_folder is not None:
-                                parent_folder.addChild(ch)
-                                self.sort_tables_in_folder(parent_folder)
-                            else:
-                                other = self.ensure_other_queries_folder()
-                                other.addChild(ch)
-                                self.sort_tables_in_folder(other)
-                        elif ch_type == self.ITEM_FOLDER:
-                            item.takeChild(move_index)
-                            self.table_tree.addTopLevelItem(ch)
-                        elif ch_type == self.ITEM_MEASURE_FOLDER:
-                            ch.setData(0, Qt.ItemDataRole.UserRole, item.data(0, Qt.ItemDataRole.UserRole))
-                        elif ch_type == self.ITEM_MEASURE:
-                            ch.setData(0, Qt.ItemDataRole.UserRole, item.data(0, Qt.ItemDataRole.UserRole))
-                        move_index -= 1
-                    self.ensure_measure_items_sorted(item)
-
-                for i in range(item.childCount()):
-                    _fix_table_children(item.child(i))
-
+            queue: List[QTreeWidgetItem] = []
             for i in range(self.table_tree.topLevelItemCount()):
-                _fix_table_children(self.table_tree.topLevelItem(i))
+                queue.append(self.table_tree.topLevelItem(i))
+
+            while queue:
+                node = queue.pop(0)
+                if node is None:
+                    continue
+
+                if _repair_parent(node):
+                    queue.append(node)
+                    continue
+
+                node_type = _item_type(node)
+                allowed_children = self.ALLOWED_CHILDREN.get(node_type, frozenset())
+                child_index = 0
+                while child_index < node.childCount():
+                    child = node.child(child_index)
+                    if child is None:
+                        child_index += 1
+                        continue
+                    child_type = _item_type(child)
+                    if child_type not in allowed_children:
+                        if not _repair_parent(child):
+                            child_index += 1
+                        else:
+                            continue
+                    else:
+                        queue.append(child)
+                        child_index += 1
+
+                if node_type == self.ITEM_MEASURE_FOLDER:
+                    parent_item = node.parent()
+                    parent_path = (
+                        parent_item.data(0, self.KEY_ROLE)
+                        if parent_item and _item_type(parent_item) == self.ITEM_MEASURE_FOLDER
+                        else None
+                    )
+                    self._reset_measure_folder_paths(node, parent_path)
+                elif node_type == self.ITEM_TABLE:
+                    self.ensure_columns_sorted(node)
+                    self.ensure_measure_items_sorted(node)
+
+            self.ensure_other_queries_last()
 
             def _ensure_tables_sorted_recursive(node: QTreeWidgetItem):
                 if node.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER:
