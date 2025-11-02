@@ -18,14 +18,34 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QStackedLayout,
 )
-from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtCore import Qt, QTimer, QPointF, QThread, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QPixmap, QAction, QActionGroup, QPainter, QColor, QPen, QPalette
 from Tabs.tab_search import FileSearchApp
 from Tabs.tab_dax_query import DAXQueryTab
-from Tabs.tab_dax_writer import DAXWriterTab
 from Tabs.tab_tables_elements import PowerQueryTab
 from Tabs.tab_bookmarks import TabBookmarks
 from common_functions import apply_theme, THEME_PRESETS, PBIPProject, load_pbip_project
+
+
+class ProjectLoadWorker(QObject):
+    """Background worker that loads PBIP metadata without blocking the UI thread."""
+
+    finished = pyqtSignal(PBIPProject)
+    failed = pyqtSignal(str)
+
+    def __init__(self, pbip_path: str):
+        super().__init__()
+        self._pbip_path = pbip_path
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            project = load_pbip_project(self._pbip_path)
+            project.refresh_all()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(project)
 
 
 class BusyIndicator(QWidget):
@@ -97,6 +117,12 @@ class MainWindow(QMainWindow):
         self.confirm_btn: QPushButton | None = None
         self.loading_widget: QWidget | None = None
         self.loading_indicator: BusyIndicator | None = None
+        self._load_thread: QThread | None = None
+        self._loader_worker: ProjectLoadWorker | None = None
+        self._inline_loading = False
+        self._cursor_active = False
+        self._is_loading_project = False
+        self._pending_project_path: str | None = None
 
         self.init_ui()
         self.setup_menu()
@@ -150,7 +176,8 @@ class MainWindow(QMainWindow):
 
         self.file_input = QLineEdit()
         self.file_input.setPlaceholderText("Select your .pbip file...")
-        self.file_input.setText("C:/Users/rodrigo.ferreira/Desktop/Devoteam/Supply Chain.pbip")
+        initial_path = self._pending_project_path or "C:/Users/rodrigo.ferreira/Desktop/Devoteam/Supply Chain.pbip"
+        self.file_input.setText(initial_path)
         self.file_input.setReadOnly(False)
 
         browse_btn = QPushButton("Browse")
@@ -335,8 +362,12 @@ class MainWindow(QMainWindow):
     def open_pbip_via_menu(self):
         """Open a PBIP file using the File > Open menu."""
         previous_path = str(self.project.pbip_path) if self.project else None
-        self.select_pbip_file()
-        if self.project and str(self.project.pbip_path) != (previous_path or ""):
+        selected_path = self.select_pbip_file()
+        if not selected_path:
+            return
+        normalized_previous = os.path.abspath(previous_path) if previous_path else None
+        normalized_selected = os.path.abspath(selected_path)
+        if normalized_previous is None or normalized_selected != normalized_previous:
             self.load_main_tabs()
 
     def reload_current_project(self):
@@ -344,10 +375,12 @@ class MainWindow(QMainWindow):
         if not self.project:
             QMessageBox.information(self, "No Project", "Select a .pbip file first.")
             return
-        try:
-            self.project.refresh_all()
-        except Exception as exc:
-            QMessageBox.warning(self, "Reload Failed", f"Could not refresh the project:\n{exc}")
+        if self._is_loading_project:
+            QMessageBox.information(self, "Please Wait", "The project is still loading. Please wait until it finishes.")
+            return
+        project_path = str(self.project.pbip_path)
+        self._pending_project_path = project_path
+        self.file_input.setText(project_path)
         self.load_main_tabs()
 
     def open_project_folder(self):
@@ -396,7 +429,7 @@ class MainWindow(QMainWindow):
         """Open the author's public profile in the default browser."""
         webbrowser.open("https://www.linkedin.com/in/rodrigoavf/")
 
-    def select_pbip_file(self):
+    def select_pbip_file(self) -> str | None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Power BI Project File (.pbip)",
@@ -405,22 +438,16 @@ class MainWindow(QMainWindow):
         )
 
         if not file_path:
-            return
+            return None
 
-        if not file_path.lower().endswith(".pbip"):
+        normalized = self._normalize_pbip_path(file_path)
+        if not normalized:
             QMessageBox.critical(self, "Invalid File", "Please select a valid .pbip file.")
-            return
+            return None
 
-        try:
-            self.project = load_pbip_project(file_path, force_reload=True)
-        except Exception as exc:
-            QMessageBox.critical(self, "Load Failed", f"Could not open PBIP project:\n{exc}")
-            return
-
-        project_path = str(self.project.pbip_path)
-        self.setWindowTitle(f"Tentacles{' - ' + os.path.basename(project_path) if project_path else ''}")
-        self.file_input.setText(project_path)
-        self.refresh_menu_state()
+        self._pending_project_path = normalized
+        self.file_input.setText(normalized)
+        return normalized
 
     def show_loading(self, loading: bool):
         """Toggle the start-screen Continue button state."""
@@ -445,6 +472,161 @@ class MainWindow(QMainWindow):
             self.loading_indicator.set_running(loading)
 
     def load_main_tabs(self):
+        if self._is_loading_project:
+            return
+
+        raw_value = (self.file_input.text() or "").strip()
+        candidate = self._normalize_pbip_path(raw_value) if raw_value else None
+
+        if candidate is None and self._pending_project_path:
+            candidate = self._normalize_pbip_path(self._pending_project_path)
+
+        if candidate is None and self.project:
+            candidate = self._normalize_pbip_path(str(self.project.pbip_path))
+
+        if candidate is None:
+            QMessageBox.warning(self, "Missing File", "Please select a .pbip file first.")
+            return
+
+        self.file_input.setText(candidate)
+        self._pending_project_path = candidate
+
+        self._is_loading_project = True
+        self._inline_loading = bool(self.confirm_btn and self.confirm_btn.isVisible())
+        if self._inline_loading:
+            self.show_loading(True)
+
+        self._set_wait_cursor(True)
+
+        self._load_thread = QThread(self)
+        self._loader_worker = ProjectLoadWorker(candidate)
+        self._loader_worker.moveToThread(self._load_thread)
+        self._load_thread.started.connect(self._loader_worker.run)
+        self._loader_worker.finished.connect(self._on_project_loaded)
+        self._loader_worker.failed.connect(self._on_project_load_failed)
+        self._loader_worker.finished.connect(self._load_thread.quit)
+        self._loader_worker.failed.connect(self._load_thread.quit)
+        self._load_thread.finished.connect(self._cleanup_loader_thread)
+        self._load_thread.start()
+
+    def _normalize_pbip_path(self, path: str) -> str | None:
+        if not path:
+            return None
+        candidate = os.path.abspath(os.path.expanduser(path))
+        if not candidate.lower().endswith(".pbip"):
+            return None
+        if not os.path.isfile(candidate):
+            return None
+        return candidate
+
+    def _set_wait_cursor(self, active: bool):
+        if active and not self._cursor_active:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self._cursor_active = True
+        elif not active and self._cursor_active:
+            QApplication.restoreOverrideCursor()
+            self._cursor_active = False
+
+    def _cleanup_loader_thread(self):
+        self._set_wait_cursor(False)
+        if self._inline_loading:
+            self.show_loading(False)
+            self._inline_loading = False
+        if self._loader_worker:
+            self._loader_worker.deleteLater()
+            self._loader_worker = None
+        if self._load_thread:
+            self._load_thread.deleteLater()
+            self._load_thread = None
+        self._is_loading_project = False
+
+    def _on_project_loaded(self, project: PBIPProject):
+        project_path = str(project.pbip_path)
+        if not project_path:
+            QMessageBox.warning(self, "Project Load Failed", "The selected project path could not be resolved.")
+            return
+
+        self._pending_project_path = project_path
+        if not self._initialize_main_interface(project):
+            return
+
+        self.project = project
+        self.setWindowTitle(f"Tentacles - {os.path.basename(project_path)}")
+        self.file_input.setText(project_path)
+        self.refresh_menu_state()
+
+    def _on_project_load_failed(self, message: str):
+        QMessageBox.critical(
+            self,
+            "Project Load Failed",
+            f"An error occurred while loading the project:\n{message}",
+        )
+        if self.project:
+            current_path = str(self.project.pbip_path)
+            self.setWindowTitle(f"Tentacles - {os.path.basename(current_path)}")
+        else:
+            self.setWindowTitle("Tentacles")
+
+    def _initialize_main_interface(self, project: PBIPProject) -> bool:
+        project_path = str(project.pbip_path)
+        try:
+            tabs = QTabWidget()
+            tables_tab = PowerQueryTab(project)
+            bookmarks_tab = TabBookmarks(project)
+            dax_queries_tab = DAXQueryTab(project)
+            search_tab = FileSearchApp(project_path)
+
+            tabs.addTab(tables_tab, "Tables And Elements")
+            tabs.addTab(bookmarks_tab, "Bookmarks")
+            tabs.addTab(dax_queries_tab, "DAX Queries")
+            tabs.addTab(search_tab, "Search Files")
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Project Load Failed",
+                f"An error occurred while preparing the project tabs:\n{exc}",
+            )
+            return False
+
+        info_widget = QWidget()
+        info_layout = QHBoxLayout()
+
+        file_label = QLabel(f"Current file: {project_path}")
+        change_button = QPushButton("Change File")
+        change_button.clicked.connect(self.change_file)
+
+        info_layout.addWidget(file_label)
+        info_layout.addStretch()
+        info_layout.addWidget(change_button)
+        info_widget.setLayout(info_layout)
+
+        main_widget = QWidget()
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(info_widget)
+        main_layout.addWidget(tabs)
+
+        credit_label = QLabel('<a href="https://www.linkedin.com/in/rodrigoavf/">Created by Rodrigo Ferreira</a>')
+        credit_label.setTextFormat(Qt.TextFormat.RichText)
+        credit_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        credit_label.setOpenExternalLinks(True)
+        credit_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        credit_label.setStyleSheet("color: gray; font-size: 10pt; margin-top: 12px; margin-bottom: 8px;")
+
+        main_layout.addWidget(credit_label)
+
+        main_widget.setLayout(main_layout)
+        self.setCentralWidget(main_widget)
+
+        self.cta_stack = None
+        self.confirm_btn = None
+        self.loading_widget = None
+        self.loading_indicator = None
+        return True
+
+    def _legacy_load_main_tabs(self):
+        """Legacy synchronous loader retained for reference."""
+        pass
+        """
         if not self.project:
             candidate = (self.file_input.text() or '').strip()
             if not candidate or not candidate.lower().endswith('.pbip') or not os.path.isfile(candidate):
@@ -476,14 +658,12 @@ class MainWindow(QMainWindow):
             tabs = QTabWidget()
             dax_queries_tab = DAXQueryTab(self.project)
             bookmarks_tab = TabBookmarks(self.project)
-            dax_writer_tab = DAXWriterTab(self.project)
             tables_tab = PowerQueryTab(self.project)
             search_tab = FileSearchApp(project_path)
 
             tabs.addTab(tables_tab, 'Tables And Elements')
             tabs.addTab(bookmarks_tab, 'Bookmarks')
             tabs.addTab(dax_queries_tab, 'DAX Queries')
-            tabs.addTab(dax_writer_tab, 'DAX Writer')
             tabs.addTab(search_tab, 'Search Files')
         except Exception as exc:
             if inline_feedback:
@@ -529,7 +709,12 @@ class MainWindow(QMainWindow):
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
         self.refresh_menu_state()
+        """
     def change_file(self):
-        self.project: PBIPProject | None = None
+        if self._is_loading_project:
+            QMessageBox.information(self, "Please Wait", "The project is still loading. Please wait until it finishes.")
+            return
+        self.project = None
+        self._pending_project_path = None
         self.init_ui()
         self.refresh_menu_state()
