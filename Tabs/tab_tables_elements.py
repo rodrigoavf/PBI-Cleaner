@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 from collections import defaultdict
-from typing import Any, Dict, Optional, List, Tuple, Set
+from typing import Any, Callable, Dict, Optional, List, Tuple, Set
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -46,6 +46,27 @@ class HierarchyTree(QTreeWidget):
         super().__init__(parent)
         self._type_role = type_role
         self._table_marker = table_marker
+        self._drop_validator: Optional[
+            Callable[[Optional[QTreeWidgetItem], List[QTreeWidgetItem], QAbstractItemView.DropIndicatorPosition], bool]
+        ] = None
+
+    def set_drop_validator(
+        self,
+        validator: Optional[
+            Callable[[Optional[QTreeWidgetItem], List[QTreeWidgetItem], QAbstractItemView.DropIndicatorPosition], bool]
+        ],
+    ) -> None:
+        self._drop_validator = validator
+
+    def _validate_drop_event(self, event: QDropEvent) -> bool:
+        if self._drop_validator is None:
+            return True
+        target = self.itemAt(event.position().toPoint())
+        indicator = self.dropIndicatorPosition()
+        items = self.selectedItems()
+        if not items:
+            return False
+        return self._drop_validator(target, items, indicator)
 
     def _drag_contains_tables(self) -> bool:
         for item in self.selectedItems():
@@ -103,6 +124,10 @@ class HierarchyTree(QTreeWidget):
         super().dragMoveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
+        if not self._validate_drop_event(event):
+            event.ignore()
+            return
+
         if not (self._drag_contains_tables() and self._is_drop_on_table(event)):
             super().dropEvent(event)
             return
@@ -175,7 +200,7 @@ class PowerQueryTab(QWidget):
     ALLOWED_CHILDREN: Dict[str, Set[str]] = {
         ITEM_FOLDER: frozenset({ITEM_FOLDER, ITEM_TABLE}),
         ITEM_TABLE: frozenset({ITEM_COLUMN, ITEM_MEASURE_FOLDER, ITEM_MEASURE}),
-        ITEM_MEASURE_FOLDER: frozenset({ITEM_MEASURE}),
+        ITEM_MEASURE_FOLDER: frozenset({ITEM_MEASURE_FOLDER, ITEM_MEASURE}),
         ITEM_MEASURE: frozenset(),
         ITEM_COLUMN: frozenset(),
     }
@@ -183,7 +208,7 @@ class PowerQueryTab(QWidget):
         ITEM_FOLDER: frozenset({None, ITEM_FOLDER}),
         ITEM_TABLE: frozenset({ITEM_FOLDER}),
         ITEM_COLUMN: frozenset({ITEM_TABLE}),
-        ITEM_MEASURE_FOLDER: frozenset({ITEM_TABLE}),
+        ITEM_MEASURE_FOLDER: frozenset({ITEM_TABLE, ITEM_MEASURE_FOLDER}),
         ITEM_MEASURE: frozenset({ITEM_TABLE, ITEM_MEASURE_FOLDER}),
     }
 
@@ -254,6 +279,7 @@ class PowerQueryTab(QWidget):
         left_layout.addWidget(QLabel("Tables"))
 
         self.table_tree = HierarchyTree(self.TYPE_ROLE, self.ITEM_TABLE)
+        self.table_tree.set_drop_validator(self._validate_tree_drop)
         self.table_tree.setHeaderHidden(True)
         self.table_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
@@ -1128,6 +1154,126 @@ class PowerQueryTab(QWidget):
         finally:
             self._ignore_tree_changes = previous_flag
 
+    def _determine_drop_parent(
+        self,
+        target_item: Optional[QTreeWidgetItem],
+        items: List[QTreeWidgetItem],
+        indicator: QAbstractItemView.DropIndicatorPosition,
+    ) -> Optional[QTreeWidgetItem]:
+        if indicator == QAbstractItemView.DropIndicatorPosition.OnItem:
+            if target_item is None:
+                return None
+            target_type = target_item.data(0, self.TYPE_ROLE)
+            if target_type == self.ITEM_TABLE:
+                for dragged in items:
+                    if dragged.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
+                        return target_item.parent()
+            return target_item
+        if indicator in (
+            QAbstractItemView.DropIndicatorPosition.AboveItem,
+            QAbstractItemView.DropIndicatorPosition.BelowItem,
+        ):
+            return target_item.parent() if target_item else None
+        return None
+
+    def _is_descendant_item(
+        self,
+        node: Optional[QTreeWidgetItem],
+        potential_ancestor: Optional[QTreeWidgetItem],
+    ) -> bool:
+        if node is None or potential_ancestor is None:
+            return False
+        current = node
+        while current is not None:
+            if current is potential_ancestor:
+                return True
+            current = current.parent()
+        return False
+
+    def _folder_contains_tables(self, folder_item: QTreeWidgetItem) -> bool:
+        stack = [folder_item]
+        while stack:
+            node = stack.pop()
+            for idx in range(node.childCount()):
+                child = node.child(idx)
+                child_type = child.data(0, self.TYPE_ROLE)
+                if child_type == self.ITEM_TABLE:
+                    return True
+                if child_type == self.ITEM_FOLDER:
+                    stack.append(child)
+        return False
+
+    def _validate_tree_drop(
+        self,
+        target_item: Optional[QTreeWidgetItem],
+        items: List[QTreeWidgetItem],
+        indicator: QAbstractItemView.DropIndicatorPosition,
+    ) -> bool:
+        if not items:
+            return False
+
+        target_type = target_item.data(0, self.TYPE_ROLE) if target_item else None
+
+        if (
+            indicator == QAbstractItemView.DropIndicatorPosition.OnItem
+            and target_type == self.ITEM_TABLE
+        ):
+            for dragged in items:
+                if dragged.data(0, self.TYPE_ROLE) == self.ITEM_TABLE:
+                    return False
+
+        if (
+            indicator == QAbstractItemView.DropIndicatorPosition.OnItem
+            and target_type == self.ITEM_FOLDER
+        ):
+            for dragged in items:
+                if dragged.data(0, self.TYPE_ROLE) == self.ITEM_FOLDER and self._folder_contains_tables(dragged):
+                    return False
+
+        parent_item = self._determine_drop_parent(target_item, items, indicator)
+        parent_type = parent_item.data(0, self.TYPE_ROLE) if parent_item else None
+
+        for dragged in items:
+            if dragged is None:
+                return False
+            if parent_item is not None and self._is_descendant_item(parent_item, dragged):
+                return False
+
+            child_type = dragged.data(0, self.TYPE_ROLE)
+            if child_type is None:
+                return False
+
+            if child_type == self.ITEM_FOLDER and dragged.data(0, self.KEY_ROLE) is None and parent_item is not None:
+                return False
+
+            allowed_parents = self.ALLOWED_PARENTS.get(child_type, frozenset())
+            if parent_item is None:
+                if None not in allowed_parents:
+                    return False
+                continue
+
+            if parent_type not in allowed_parents:
+                return False
+
+            allowed_children = self.ALLOWED_CHILDREN.get(parent_type, frozenset())
+            if child_type not in allowed_children:
+                return False
+
+            if (
+                child_type == self.ITEM_FOLDER
+                and self._folder_contains_tables(dragged)
+                and parent_item is not dragged.parent()
+                and parent_type == self.ITEM_FOLDER
+            ):
+                return False
+
+            if child_type in {self.ITEM_MEASURE, self.ITEM_MEASURE_FOLDER, self.ITEM_COLUMN}:
+                target_table = self._table_item_for(parent_item)
+                if target_table is None:
+                    return False
+
+        return True
+
     def show_tree_context_menu(self, position):
         menu = QMenu(self.table_tree)
         item = self.table_tree.itemAt(position)
@@ -1260,7 +1406,6 @@ class PowerQueryTab(QWidget):
         folder_name = self.generate_unique_measure_folder_name("New Folder", table_item)
         folder_item = QTreeWidgetItem([folder_name])
         folder_item.setData(0, self.TYPE_ROLE, self.ITEM_MEASURE_FOLDER)
-        folder_item.setData(0, self.KEY_ROLE, folder_name)
         folder_item.setData(0, Qt.ItemDataRole.UserRole, table_name)
         flags = (
             Qt.ItemFlag.ItemIsEnabled
@@ -1273,9 +1418,22 @@ class PowerQueryTab(QWidget):
         if self.folder_icon and not self.folder_icon.isNull():
             folder_item.setIcon(0, self.folder_icon)
 
-        table_item.addChild(folder_item)
-        self.ensure_measure_items_sorted(table_item)
-        self.table_tree.expandItem(table_item)
+        container = (
+            parent_item
+            if parent_item.data(0, self.TYPE_ROLE) == self.ITEM_MEASURE_FOLDER
+            else table_item
+        )
+        container.addChild(folder_item)
+
+        if container.data(0, self.TYPE_ROLE) == self.ITEM_MEASURE_FOLDER:
+            base_path = container.data(0, self.KEY_ROLE)
+        else:
+            base_path = None
+        self._reset_measure_folder_paths(folder_item, base_path)
+        self.ensure_measure_items_sorted(container)
+        self.table_tree.expandItem(container)
+        if container is not table_item:
+            self.table_tree.expandItem(table_item)
         self.table_tree.setCurrentItem(folder_item)
         self.table_tree.editItem(folder_item)
         self.mark_dirty()
