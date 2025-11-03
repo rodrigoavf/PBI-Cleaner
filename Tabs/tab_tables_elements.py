@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -130,107 +131,178 @@ class ChatRequestWorker(QRunnable):
 
 
 class ChatGPTFreeClient:
-    CHAT_URL = "https://chatgptfree.ai/chat/"
+    """Lightweight client for the chatgptfree.ai endpoint (no login required)."""
 
-    def __init__(self):
+    CHAT_URL = "https://chatgptfree.ai/chat/"
+    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    REQUIRED_KEYS = ("ajaxUrl", "nonce", "botId")
+
+    def __init__(self) -> None:
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
         self._config: Optional[Dict[str, Any]] = None
-        self._session_id = str(uuid.uuid4())
-        self._conversation_id = str(uuid.uuid4())
+        self._session_id = self._new_uuid()
+        self._conversation_id = self._new_uuid()
         self._lock = threading.Lock()
 
-    def _ensure_config(self) -> None:
-        if self._config is not None:
-            return
-        with self._lock:
-            if self._config is not None:
-                return
-            request = urllib.request.Request(self.CHAT_URL)
-            with self._opener.open(request, timeout=30) as response:
-                html_text = response.read().decode("utf-8", errors="replace")
-            data_prefix = "window.__NEXT_DATA__ = "
-            idx = html_text.find(data_prefix)
-            if idx == -1:
-                raise RuntimeError("Unable to locate configuration payload.")
-            start = idx + len(data_prefix)
-            end = html_text.find("</script>", start)
-            payload = html_text[start:end].rstrip(";\n ")
-            obj = json.loads(payload)
-            page_props = obj.get("props", {}).get("pageProps", {})
-            self._config = {
-                "model": page_props.get("defaultOpenAIModelName", "gpt-3.5-turbo"),
-                "auth_token": page_props.get("authToken"),
-                "csrf_token": page_props.get("csrfToken"),
-            }
+    @staticmethod
+    def _new_uuid() -> str:
+        return str(uuid.uuid4())
 
-    def generate(self, prompt: str) -> str:
-        self._ensure_config()
-        if not self._config:
-            raise RuntimeError("ChatGPT configuration unavailable.")
-        params = {
-            "conversation_id": self._conversation_id,
-            "session_id": self._session_id,
-            "action": "add",
-            "messages": [
-                {
-                    "id": str(uuid.uuid4()),
-                    "role": "user",
-                    "content": {"content_type": "text", "parts": [prompt]},
-                }
-            ],
-            "model": self._config.get("model"),
+    def _reset_session(self) -> None:
+        """Start a fresh anonymous session and drop cached configuration."""
+        self._config = None
+        self._session_id = self._new_uuid()
+        self._conversation_id = self._new_uuid()
+
+    def _fetch_page_config(self) -> Dict[str, Any]:
+        headers = {
+            "User-Agent": self.USER_AGENT,
+            "Referer": self.CHAT_URL,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         }
+        request = urllib.request.Request(self.CHAT_URL, headers=headers)
+        with self._opener.open(request, timeout=30) as response:
+            html_text = response.read().decode("utf-8", "ignore")
+
+        match = re.search(r"data-config=(['\"])(.*?)\1", html_text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            raise RuntimeError("Unable to locate chatbot configuration on page.")
+
+        payload = html.unescape(match.group(2))
+        try:
+            config = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Unable to parse chatbot configuration payload.") from exc
+
+        missing = [key for key in self.REQUIRED_KEYS if key not in config]
+        if missing:
+            raise RuntimeError(f"Incomplete chatbot configuration: missing {', '.join(missing)}.")
+
+        return config
+
+    def _ensure_config(self) -> None:
+        if self._config is None:
+            self._config = self._fetch_page_config()
+
+    def _refresh_nonce(self) -> None:
+        """Refresh nonce token used by the AJAX endpoint."""
+        if not self._config:
+            self._config = self._fetch_page_config()
+            return
+
+        ajax_url = self._config.get("ajaxUrl")
+        if not ajax_url:
+            self._config = self._fetch_page_config()
+            return
+
+        data = {
+            "action": self._config.get("nonceRefreshAction", "aipkit_get_frontend_chat_nonce"),
+            "bot_id": str(self._config.get("botId", "")),
+        }
+        headers = {
+            "User-Agent": self.USER_AGENT,
+            "Referer": self.CHAT_URL,
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        encoded = urllib.parse.urlencode(data).encode("utf-8")
+        request = urllib.request.Request(ajax_url, data=encoded, headers=headers)
+        try:
+            with self._opener.open(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8", "ignore"))
+        except Exception:
+            # If refreshing fails, fetch a brand-new configuration.
+            self._config = self._fetch_page_config()
+            return
+
+        nonce = payload.get("data", {}).get("nonce")
+        if not nonce:
+            self._config = self._fetch_page_config()
+            return
+        self._config["nonce"] = nonce
+
+    def _build_request_parts(self, prompt: str) -> Tuple[str, Dict[str, str], Dict[str, str]]:
+        if not self._config:
+            raise RuntimeError("Chat service configuration unavailable.")
+        ajax_url = self._config.get("ajaxUrl")
+        if not ajax_url:
+            raise RuntimeError("Chat endpoint unavailable.")
+        nonce = self._config.get("nonce")
+        if not nonce:
+            raise RuntimeError("Security token missing; please retry.")
 
         headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
+            "User-Agent": self.USER_AGENT,
             "Referer": self.CHAT_URL,
+            "Content-Type": "application/x-www-form-urlencoded",
         }
-        auth_token = self._config.get("auth_token")
-        csrf_token = self._config.get("csrf_token")
-        if auth_token:
-            headers["Authorization"] = f"Bearer {auth_token}"
-        if csrf_token:
-            headers["X-CSRF-Token"] = csrf_token
+        data = {
+            "action": self._config.get("messageAction", "aipkit_frontend_chat_message"),
+            "_ajax_nonce": nonce,
+            "bot_id": str(self._config.get("botId")),
+            "session_id": self._session_id,
+            "conversation_uuid": self._conversation_id,
+            "post_id": str(self._config.get("postId", "")),
+            "message": prompt,
+        }
+        return ajax_url, headers, data
 
-        data = json.dumps(params).encode("utf-8")
-        request = urllib.request.Request(
-            urllib.parse.urljoin(self.CHAT_URL, "/api/conversation"),
-            data=data,
-            headers=headers,
-        )
+    def _post_message(self, prompt: str) -> str:
+        ajax_url, headers, data = self._build_request_parts(prompt)
+        encoded = urllib.parse.urlencode(data).encode("utf-8")
+        request = urllib.request.Request(ajax_url, data=encoded, headers=headers)
 
-        with self._opener.open(request, timeout=60) as response:
-            buffer = ""
-            while True:
-                chunk = response.readline().decode("utf-8", errors="replace")
-                if not chunk:
-                    break
-                buffer += chunk
-                if "[DONE]" in chunk:
-                    break
+        try:
+            with self._opener.open(request, timeout=60) as response:
+                return response.read().decode("utf-8", "ignore")
+        except urllib.error.HTTPError as http_err:
+            if http_err.code in (401, 403):
+                self._refresh_nonce()
+                ajax_url, headers, data = self._build_request_parts(prompt)
+                encoded = urllib.parse.urlencode(data).encode("utf-8")
+                request = urllib.request.Request(ajax_url, data=encoded, headers=headers)
+                with self._opener.open(request, timeout=60) as response:
+                    return response.read().decode("utf-8", "ignore")
+            raise
 
-        result = ""
-        for line in buffer.splitlines():
-            if not line.startswith("data: "):
-                continue
-            payload = line[6:].strip()
-            if payload in {"[DONE]", ""}:
-                continue
-            try:
-                data = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            message = data.get("message", {})
-            content = message.get("content", {})
-            parts = content.get("parts") or []
-            if parts:
-                result = parts[0]
+    @staticmethod
+    def _clean_reply(text: str) -> str:
+        fence_match = re.search(r"```(?:dax)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
+        if fence_match:
+            return fence_match.group(1).strip()
+        return text.strip()
 
-        if not result:
-            raise RuntimeError("No response received from ChatGPT.")
-        cleaned = html.unescape(result.strip())
-        return cleaned
+    def generate(self, prompt: str) -> str:
+        with self._lock:
+            attempts = 0
+            last_error: Optional[Exception] = None
+            while attempts < 3:
+                try:
+                    self._ensure_config()
+                    payload_text = self._post_message(prompt)
+                    payload = json.loads(payload_text)
+                except Exception as exc:
+                    last_error = exc
+                    self._reset_session()
+                    attempts += 1
+                    continue
+
+                if not payload.get("success"):
+                    message = payload.get("data", {}).get("message") or "ChatGPT request failed."
+                    if "nonce" in message.lower() or "token" in message.lower():
+                        self._refresh_nonce()
+                        attempts += 1
+                        continue
+                    raise RuntimeError(message)
+
+                reply = (payload.get("data", {}) or {}).get("reply", "").strip()
+                if not reply:
+                    raise RuntimeError("ChatGPT returned an empty response.")
+                return self._clean_reply(reply)
+
+            if last_error:
+                raise RuntimeError(str(last_error))
+            raise RuntimeError("Unable to reach ChatGPT service.")
 from common_functions import code_editor_font, APP_THEME, PBIPProject, load_pbip_project, _parse_table_measures
 
 
@@ -444,6 +516,7 @@ class PowerQueryTab(QWidget):
         self.dax_table_patterns: List[Tuple[re.Pattern, str]] = []
         self.dax_column_patterns: List[Tuple[List[re.Pattern], re.Pattern, Tuple[str, str]]] = []
         self._dax_column_highlight_patterns: List[re.Pattern] = []
+        self._column_table_counts: Dict[str, int] = {}
         self.dax_thread_pool = QThreadPool.globalInstance()
         self.dax_api_client = ChatGPTFreeClient()
         self._dax_busy = False
@@ -636,7 +709,7 @@ class PowerQueryTab(QWidget):
 
         self.dax_prompt_editor = CodeEditor()
         self.dax_prompt_editor.setFont(code_editor_font())
-        self._prepare_dax_writer_editor(self.dax_prompt_editor, editable=True)
+        self._prepare_dax_writer_editor(self.dax_prompt_editor, editable=True, for_output=False)
         self.dax_prompt_editor.setPlaceholderText(
             "Example: Create a measure that sums Sales[Amount] for the selected Calendar[Year]."
         )
@@ -651,7 +724,7 @@ class PowerQueryTab(QWidget):
 
         self.dax_output_editor = CodeEditor()
         self.dax_output_editor.setFont(code_editor_font())
-        self._prepare_dax_writer_editor(self.dax_output_editor, editable=False)
+        self._prepare_dax_writer_editor(self.dax_output_editor, editable=True, for_output=True)
         dax_writer_layout.addWidget(self.dax_output_editor)
 
         self._dax_prompt_shortcuts = [
@@ -693,12 +766,15 @@ class PowerQueryTab(QWidget):
         hotkey_hint_left.setWordWrap(True)
         left_layout.addWidget(hotkey_hint_left)
 
+        self.import_mode_label = QLabel("Data load mode")
         self.import_mode_combo = QComboBox()
         self.import_mode_combo.setEnabled(False)
         self.import_mode_combo.addItem("Import", "import")
         self.import_mode_combo.addItem("DirectQuery", "directquery")
         self.import_mode_combo.currentIndexChanged.connect(self.on_import_mode_changed)
-        form_layout.addRow("Data load mode", self.import_mode_combo)
+        form_layout.addRow(self.import_mode_label, self.import_mode_combo)
+        self.import_mode_label.hide()
+        self.import_mode_combo.hide()
 
         right_layout.addWidget(self.measure_form_widget)
 
@@ -962,13 +1038,19 @@ class PowerQueryTab(QWidget):
                     count += self._pattern_occurrences(standalone_pattern, combined_texts)
                 self._measure_usage_flags[measure_id] = count > 1
 
-    def _prepare_dax_writer_editor(self, editor: CodeEditor, *, editable: bool) -> None:
-        if editable and self.dax_prompt_highlighter:
-            self.dax_prompt_highlighter.setDocument(None)
-            self.dax_prompt_highlighter = None
-        if not editable and self.dax_output_highlighter:
+    def _prepare_dax_writer_editor(
+        self,
+        editor: CodeEditor,
+        *,
+        editable: bool,
+        for_output: bool,
+    ) -> None:
+        if for_output and self.dax_output_highlighter:
             self.dax_output_highlighter.setDocument(None)
             self.dax_output_highlighter = None
+        if not for_output and self.dax_prompt_highlighter:
+            self.dax_prompt_highlighter.setDocument(None)
+            self.dax_prompt_highlighter = None
 
         existing = getattr(editor, "_highlighter", None)
         if existing:
@@ -995,10 +1077,10 @@ class PowerQueryTab(QWidget):
             pass
         editor.setReadOnly(not editable)
 
-        if editable:
-            self.dax_prompt_highlighter = TableColumnHighlighter(editor.document())
-        else:
+        if for_output:
             self.dax_output_highlighter = DAXTableColumnHighlighter(editor.document())
+        else:
+            self.dax_prompt_highlighter = TableColumnHighlighter(editor.document())
 
         self._update_dax_writer_highlighters()
 
@@ -1024,16 +1106,23 @@ class PowerQueryTab(QWidget):
 
     def _refresh_dax_writer_metadata(self) -> None:
         tables: Dict[str, List[str]] = {}
+        column_table_counts: Dict[str, int] = defaultdict(int)
         for name, info in (self.tables_data or {}).items():
             columns = [col for col in (info.get("columns") or []) if isinstance(col, str) and col.strip()]
             if columns:
-                tables[name] = sorted(dict.fromkeys(columns), key=str.casefold)
+                unique_columns = sorted(dict.fromkeys(columns), key=str.casefold)
+                tables[name] = unique_columns
+                for column in unique_columns:
+                    column_table_counts[column.casefold()] += 1
+
+        self._column_table_counts = dict(column_table_counts)
 
         self.dax_table_patterns = []
         self.dax_column_patterns = []
         self._dax_column_highlight_patterns = []
 
         if not tables:
+            self._column_table_counts = {}
             self._update_dax_writer_highlighters()
             self._on_dax_prompt_changed()
             return
@@ -1097,7 +1186,11 @@ class PowerQueryTab(QWidget):
                 mentioned_tables.add(table)
 
         for bound_patterns, bracket_pattern, (table, column) in self.dax_column_patterns:
-            if any(p.search(text) for p in bound_patterns) or bracket_pattern.search(text):
+            column_key = column.casefold()
+            matched = any(p.search(text) for p in bound_patterns)
+            if not matched and self._column_table_counts.get(column_key, 0) == 1:
+                matched = bool(bracket_pattern.search(text))
+            if matched:
                 mentioned_columns.add((table, column))
                 mentioned_tables.add(table)
 
@@ -1652,6 +1745,8 @@ class PowerQueryTab(QWidget):
             self.import_mode_combo.setCurrentIndex(0)
             self.import_mode_combo.blockSignals(False)
             self.import_mode_combo.setEnabled(False)
+            self.import_mode_label.hide()
+            self.import_mode_combo.hide()
             self.ignore_editor_changes = False
             return
 
@@ -1663,6 +1758,9 @@ class PowerQueryTab(QWidget):
             language = "dax" if table_type == "calculated" else "m"
         label_text = "Power Query (M)" if language == "m" else "Calculated Table (DAX)"
         self.query_label.setText(label_text)
+        is_m_language = language == "m"
+        self.import_mode_label.setVisible(is_m_language)
+        self.import_mode_combo.setVisible(is_m_language)
 
         self.query_editor.setEnabled(True)
         if self.query_editor.language() != language:
@@ -1676,7 +1774,9 @@ class PowerQueryTab(QWidget):
         self.import_mode_combo.blockSignals(True)
         self.import_mode_combo.setCurrentIndex(idx)
         self.import_mode_combo.blockSignals(False)
-        self.import_mode_combo.setEnabled(True)
+        self.import_mode_combo.setEnabled(is_m_language)
+        if not is_m_language:
+            self.import_mode_combo.hide()
 
         self.ignore_editor_changes = False
 
