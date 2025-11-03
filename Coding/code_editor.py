@@ -6,10 +6,16 @@ from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QPlainTextEdit, QCompleter
 
 try:
-    from Coding.code_editor_support import get_language_definition
+    from Coding.code_editor_support import (
+        get_language_definition,
+        normalize_dax_measure_completion,
+    )
 except Exception:  # Fallback for environments without support module
     def get_language_definition(language):
         return None
+
+    def normalize_dax_measure_completion(completion):
+        return completion, False
 
 class CodeEditor(QPlainTextEdit):
     """Lightweight code editor with QCompleter-based autocompletion.
@@ -38,6 +44,8 @@ class CodeEditor(QPlainTextEdit):
         self._language: str | None = None
         self._line_comment: str | None = None
         self._ctrl_k_sequence: bool = False
+        self._active_completion_prefix: str = ""
+        self._active_completion_anchor: int | None = None
         # editable flag controls whether the user can change the text
         self._editable: bool = bool(edit)
         # QPlainTextEdit uses setReadOnly(True) to make the widget non-editable
@@ -201,14 +209,35 @@ class CodeEditor(QPlainTextEdit):
             return
         completion_text = str(completion)
 
+        if self._language == "dax":
+            completion_text, _ = normalize_dax_measure_completion(completion_text)
+
         tc = self.textCursor()
         tc.beginEditBlock()
-        # replace current word with the completion
-        tc.select(QTextCursor.SelectionType.WordUnderCursor)
+        replaced = False
+        prefix = getattr(self, "_active_completion_prefix", "")
+        anchor = getattr(self, "_active_completion_anchor", None)
+        if isinstance(anchor, int) and anchor >= 0:
+            start = anchor
+            end = anchor + len(prefix)
+            doc = self.document()
+            doc_limit = doc.characterCount()
+            if start <= end and 0 <= start <= doc_limit:
+                clamp_end = min(end, doc_limit)
+                snippet = self._get_plain_text(start, clamp_end)
+                if snippet == prefix:
+                    tc.setPosition(start)
+                    tc.setPosition(clamp_end, QTextCursor.MoveMode.KeepAnchor)
+                    replaced = True
+        if not replaced:
+            # replace current word with the completion
+            tc.select(QTextCursor.SelectionType.WordUnderCursor)
         tc.removeSelectedText()
         tc.insertText(completion_text)
         tc.endEditBlock()
         self.setTextCursor(tc)
+        self._active_completion_prefix = ""
+        self._active_completion_anchor = None
 
         # If it's a known function, add parentheses and place cursor inside
         try:
@@ -333,6 +362,11 @@ class CodeEditor(QPlainTextEdit):
             c.popup().hide()
 
     def _showCompleter(self, c: QCompleter, prefix: str, allow_empty: bool = False):
+        tc = self.textCursor()
+        self._active_completion_prefix = prefix
+        pos = tc.position()
+        anchor = pos - len(prefix)
+        self._active_completion_anchor = anchor if anchor >= 0 else 0
         c.setCompletionPrefix(prefix)
         if not prefix and not allow_empty:
             c.popup().hide()
