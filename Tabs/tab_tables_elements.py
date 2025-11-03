@@ -871,6 +871,7 @@ class PowerQueryTab(QWidget):
     def _update_dax_model_identifiers(self):
         table_terms: List[str] = []
         column_terms: List[str] = []
+        measure_terms: List[str] = []
 
         try:
             table_names = sorted(self.tables_data.keys(), key=str.casefold)
@@ -883,9 +884,9 @@ class PowerQueryTab(QWidget):
             for column in info.get("columns", []) or []:
                 column_terms.extend(self._dax_column_identifiers(table_name, column))
             for measure in info.get("measures", []) or []:
-                column_terms.extend(self._dax_measure_identifiers(table_name, measure.get("name") or ""))
+                measure_terms.extend(self._dax_measure_identifiers(table_name, measure.get("name") or ""))
 
-        set_dax_model_identifiers(table_terms, column_terms)
+        set_dax_model_identifiers(table_terms, column_terms, measure_terms)
 
     def _semantic_model_root(self) -> Optional[Path]:
         if self.project and getattr(self.project, "semantic_model_dir", None):
@@ -1970,7 +1971,7 @@ class PowerQueryTab(QWidget):
         if hasattr(self, "measure_toggle_widget"):
             self.measure_toggle_widget.hide()
         self.ignore_editor_changes = False
-        set_dax_model_identifiers([], [])
+        set_dax_model_identifiers([], [], [])
 
     def expand_all_groups(self):
         self.table_tree.expandAll()

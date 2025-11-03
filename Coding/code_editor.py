@@ -6,10 +6,16 @@ from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QPlainTextEdit, QCompleter
 
 try:
-    from Coding.code_editor_support import get_language_definition
+    from Coding.code_editor_support import (
+        get_language_definition,
+        normalize_dax_measure_completion,
+    )
 except Exception:  # Fallback for environments without support module
     def get_language_definition(language):
         return None
+
+    def normalize_dax_measure_completion(completion):
+        return completion, False
 
 class CodeEditor(QPlainTextEdit):
     """Lightweight code editor with QCompleter-based autocompletion.
@@ -200,6 +206,9 @@ class CodeEditor(QPlainTextEdit):
         if completion is None:
             return
         completion_text = str(completion)
+
+        if self._language == "dax":
+            completion_text, _ = normalize_dax_measure_completion(completion_text)
 
         tc = self.textCursor()
         tc.beginEditBlock()

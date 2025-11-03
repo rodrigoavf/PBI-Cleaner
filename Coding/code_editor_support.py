@@ -99,10 +99,14 @@ DAX_FUNCTIONS = [
 
 DAX_MODEL_TABLES: list[str] = []
 DAX_MODEL_COLUMNS: list[str] = []
+DAX_MODEL_MEASURE_IDENTIFIERS: list[str] = []
+DAX_MODEL_MEASURE_PATTERNS: list[re.Pattern] = []
+DAX_MODEL_MEASURE_CANONICAL: dict[str, str] = {}
+DAX_MODEL_MEASURE_IDENTIFIER_CASEFOLD: set[str] = set()
 
 
 def _dax_model_terms() -> list[str]:
-    return DAX_MODEL_TABLES + DAX_MODEL_COLUMNS
+    return DAX_MODEL_TABLES + DAX_MODEL_COLUMNS + DAX_MODEL_MEASURE_IDENTIFIERS
 
 M_KEYWORDS = [
     # Core syntax
@@ -233,6 +237,10 @@ class DAXHighlighter(QSyntaxHighlighter):
 
         self.f_comment = QTextCharFormat()
         self.f_comment.setForeground(QColor('#6A9955'))  # comment green
+
+        self.f_measure = QTextCharFormat()
+        self.f_measure.setForeground(QColor('#D7BA7D'))  # measure amber
+        self.f_measure.setFontWeight(QFont.Weight.Medium)
 
         # Build regex rules (use inline (?i) for case-insensitive)
         # Keywords (word-boundary)
@@ -458,6 +466,15 @@ class MHighlighter(QSyntaxHighlighter):
                 if not self._span_overlaps(excluded_spans, m.capturedStart(1), m.capturedLength(1)):
                     self.setFormat(m.capturedStart(1), m.capturedLength(1), self.f_keyword)
 
+        if DAX_MODEL_MEASURE_PATTERNS:
+            for pattern in DAX_MODEL_MEASURE_PATTERNS:
+                for match in pattern.finditer(text):
+                    start, end = match.span()
+                    length = end - start
+                    if self._span_overlaps(excluded_spans, start, length):
+                        continue
+                    self.setFormat(start, length, self.f_measure)
+
         for start, length in comment_spans:
             if length > 0:
                 self.setFormat(start, length, self.f_comment)
@@ -635,11 +652,73 @@ _LANGUAGE_DEFINITIONS: dict[str, LanguageDefinition] = {
 }
 
 
+def _extract_measure_name_from_identifier(identifier: str) -> str | None:
+    if not identifier:
+        return None
+    match = re.search(r"\[\s*(.+?)\s*\]$", identifier.strip())
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _build_measure_patterns(items: Sequence[str]) -> tuple[list[re.Pattern], dict[str, str], set[str]]:
+    patterns: list[re.Pattern] = []
+    canonical: dict[str, str] = {}
+    identifier_casefold: set[str] = set()
+    seen_keys: set[tuple[str, int]] = set()
+
+    for entry in items:
+        if not entry:
+            continue
+        text = str(entry).strip()
+        if not text:
+            continue
+        identifier_casefold.add(text.casefold())
+
+        measure_name = _extract_measure_name_from_identifier(text)
+        if not measure_name:
+            continue
+
+        measure_cf = measure_name.casefold()
+        canonical.setdefault(measure_cf, f"[{measure_name}]")
+
+        escaped_measure = re.escape(measure_name)
+
+        bracket_pattern = re.compile(rf"\[\s*{escaped_measure}\s*\]", re.IGNORECASE)
+        key = (bracket_pattern.pattern, bracket_pattern.flags)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            patterns.append(bracket_pattern)
+
+        bracket_index = text.find("[")
+        if bracket_index > 0:
+            table_part = text[:bracket_index].rstrip()
+            if table_part:
+                escaped_table = re.escape(table_part)
+                with_table_pattern = re.compile(
+                    rf"{escaped_table}\s*\[\s*{escaped_measure}\s*\]",
+                    re.IGNORECASE,
+                )
+                key = (with_table_pattern.pattern, with_table_pattern.flags)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    patterns.append(with_table_pattern)
+
+    return patterns, canonical, identifier_casefold
+
+
 def set_dax_model_identifiers(
     tables: Sequence[str] | None = None,
     columns: Sequence[str] | None = None,
+    measures: Sequence[str] | None = None,
 ) -> None:
-    """Update the cached list of DAX model tables and columns used for completions."""
+    """Update the cached list of DAX model tables, columns, and measures used for completions."""
+    global DAX_MODEL_TABLES
+    global DAX_MODEL_COLUMNS
+    global DAX_MODEL_MEASURE_IDENTIFIERS
+    global DAX_MODEL_MEASURE_PATTERNS
+    global DAX_MODEL_MEASURE_CANONICAL
+    global DAX_MODEL_MEASURE_IDENTIFIER_CASEFOLD
 
     def _normalize(items: Sequence[str] | None) -> list[str]:
         seen = set()
@@ -659,13 +738,30 @@ def set_dax_model_identifiers(
 
     new_tables = _normalize(tables)
     new_columns = _normalize(columns)
+    if measures is None:
+        new_measures = DAX_MODEL_MEASURE_IDENTIFIERS
+        measure_patterns = DAX_MODEL_MEASURE_PATTERNS
+        measure_canonical = DAX_MODEL_MEASURE_CANONICAL
+        measure_casefold = DAX_MODEL_MEASURE_IDENTIFIER_CASEFOLD
+    else:
+        new_measures = _normalize(measures)
+        measure_patterns, measure_canonical, measure_casefold = _build_measure_patterns(new_measures)
 
-    global DAX_MODEL_TABLES, DAX_MODEL_COLUMNS
-    if new_tables == DAX_MODEL_TABLES and new_columns == DAX_MODEL_COLUMNS:
+    if (
+        new_tables == DAX_MODEL_TABLES
+        and new_columns == DAX_MODEL_COLUMNS
+        and new_measures == DAX_MODEL_MEASURE_IDENTIFIERS
+        and measure_canonical == DAX_MODEL_MEASURE_CANONICAL
+        and measure_casefold == DAX_MODEL_MEASURE_IDENTIFIER_CASEFOLD
+    ):
         return
 
     DAX_MODEL_TABLES = new_tables
     DAX_MODEL_COLUMNS = new_columns
+    DAX_MODEL_MEASURE_IDENTIFIERS = new_measures
+    DAX_MODEL_MEASURE_PATTERNS = measure_patterns
+    DAX_MODEL_MEASURE_CANONICAL = measure_canonical
+    DAX_MODEL_MEASURE_IDENTIFIER_CASEFOLD = measure_casefold
 
     try:
         from Coding.code_editor import CodeEditor
@@ -675,9 +771,36 @@ def set_dax_model_identifiers(
         pass
 
 
-def get_dax_model_identifiers() -> tuple[list[str], list[str]]:
-    """Return copies of the current DAX model tables and columns lists."""
-    return list(DAX_MODEL_TABLES), list(DAX_MODEL_COLUMNS)
+def get_dax_model_identifiers() -> tuple[list[str], list[str], list[str]]:
+    """Return copies of the current DAX model tables, columns, and measure identifiers lists."""
+    return (
+        list(DAX_MODEL_TABLES),
+        list(DAX_MODEL_COLUMNS),
+        list(DAX_MODEL_MEASURE_IDENTIFIERS),
+    )
+
+
+def normalize_dax_measure_completion(completion: str) -> tuple[str, bool]:
+    """Return (text, is_measure) ensuring measure completions use bracketed form."""
+    if completion is None:
+        return "", False
+    text = str(completion).strip()
+    if not text:
+        return text, False
+
+    text_cf = text.casefold()
+    if text_cf in DAX_MODEL_MEASURE_IDENTIFIER_CASEFOLD:
+        if text.startswith("["):
+            inner = _extract_measure_name_from_identifier(text)
+            if inner:
+                return f"[{inner}]", True
+        return text, True
+
+    canonical = DAX_MODEL_MEASURE_CANONICAL.get(text_cf)
+    if canonical:
+        return canonical, True
+
+    return text, False
 
 
 def get_language_definition(language: str | None) -> LanguageDefinition | None:
